@@ -20,10 +20,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__
+from .db import CURRENT_SCHEMA_VERSION
 from .media import CONTENT_TYPES, PILLOW_AVAILABLE, resolve_media_path
 from .models import BackendError, PackageError, ValidationError, format_error_payload
 from .service import FamilyTreeService
+from .version import BACKEND_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -190,8 +191,20 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "engine": "python-stdlib-sqlite",
-                    "version": __version__,
+                    "version": BACKEND_VERSION,
+                    "backend_version": BACKEND_VERSION,
                     "pillow_available": PILLOW_AVAILABLE,
+                },
+            )
+            return
+
+        if path == "/api/version":
+            self._send_json(
+                200,
+                {
+                    "backend_version": BACKEND_VERSION,
+                    "engine": "python-stdlib-sqlite",
+                    "schema_version": CURRENT_SCHEMA_VERSION,
                 },
             )
             return

@@ -4,6 +4,7 @@ import { familyApi } from './api/client';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { ErrorModal } from './components/ErrorModal';
 import { FamilyTreeCanvas } from './components/FamilyTreeCanvas';
+import { Footer, type BackendVersionState } from './components/Footer';
 import { PackagePanel } from './components/PackagePanel';
 import { PersonEditorDrawer } from './components/PersonEditorDrawer';
 import { QuickAddModal, type QuickAddMode } from './components/QuickAddModal';
@@ -40,6 +41,9 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [quickAdd, setQuickAdd] = useState<QuickAddMode | null>(null);
   const [focusTrigger, setFocusTrigger] = useState<{ personId: string; seq: number } | null>(null);
+  const [backendVersionState, setBackendVersionState] = useState<BackendVersionState>({
+    status: 'loading',
+  });
   const focusSeqRef = useRef(0);
   const listEditorRef = useRef<HTMLElement | null>(null);
 
@@ -110,12 +114,32 @@ export default function App() {
     };
   }, [showError]);
 
+  const loadBackendVersion = useCallback(async () => {
+    setBackendVersionState((prev) =>
+      prev.status === 'ready' ? prev : { status: 'loading' },
+    );
+    try {
+      const ver = await familyApi.version();
+      setBackendVersionState({
+        status: 'ready',
+        version: ver.backend_version,
+        schemaVersion: ver.schema_version,
+      });
+    } catch {
+      setBackendVersionState({ status: 'unavailable' });
+    }
+  }, []);
+
   const loadSnapshot = useCallback(
     async (preferPersonId?: string, feedbackMessage?: string, query = search) => {
       try {
         setModalError(null);
         const snap = await familyApi.getTree(query);
         setSnapshot(snap);
+
+        if (backendVersionState.status !== 'ready') {
+          void loadBackendVersion();
+        }
 
         const candidateId =
           preferPersonId && snap.persons.some((p) => p.id === preferPersonId)
@@ -145,11 +169,12 @@ export default function App() {
         setLoading(false);
       }
     },
-    [search, selectedId, showError, showToast],
+    [backendVersionState.status, loadBackendVersion, search, selectedId, showError, showToast],
   );
 
   useEffect(() => {
     void loadSnapshot();
+    void loadBackendVersion();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -271,7 +296,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900">
       {/* Háromzónás felső navigációs sáv */}
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-6 px-6 py-3">
@@ -367,7 +392,7 @@ export default function App() {
       )}
 
       {/* Fő tartalom */}
-      <main className="mx-auto max-w-[1600px] px-4 py-4 sm:px-6">
+      <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-4 sm:px-6">
         {loading ? (
           <div className="h-[72vh] animate-pulse rounded-xl border border-slate-200 bg-white" />
         ) : tab === 'package' && snapshot ? (
@@ -564,6 +589,12 @@ export default function App() {
           </div>
         ) : null}
       </main>
+
+      <Footer
+        frontendVersion={__FRONTEND_VERSION__}
+        backendState={backendVersionState}
+        onRetryBackendVersion={() => void loadBackendVersion()}
+      />
 
       {quickAdd && (
         <QuickAddModal

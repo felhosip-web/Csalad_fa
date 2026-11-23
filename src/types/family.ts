@@ -103,7 +103,14 @@ export interface HealthResponse {
   status: string;
   engine: string;
   version: string;
+  backend_version?: string;
   pillow_available: boolean;
+}
+
+export interface VersionResponse {
+  backend_version: string;
+  engine: string;
+  schema_version: number;
 }
 
 export const GENDER_LABELS: Record<Gender, string> = {

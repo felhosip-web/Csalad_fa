@@ -9,6 +9,7 @@ import type {
   TreeSnapshot,
   UnionRecord,
   UnionStatus,
+  VersionResponse,
 } from '../types/family';
 import { translateBackendError } from '../utils/hungarian';
 
@@ -77,6 +78,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const familyApi = {
   health(): Promise<HealthResponse> {
     return request<HealthResponse>('/api/health');
+  },
+
+  version(): Promise<VersionResponse> {
+    return request<VersionResponse>('/api/version');
   },
 
   getTree(search = ''): Promise<TreeSnapshot> {

@@ -17,10 +17,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import __version__
+from .db import CURRENT_SCHEMA_VERSION
 from .media import CONTENT_TYPES, PILLOW_AVAILABLE, resolve_media_path
 from .models import BackendError, PackageError, format_error_payload
 from .service import FamilyTreeService
+from .version import BACKEND_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ service = FamilyTreeService(DATA_DIR)
 
 app = FastAPI(
     title="Családfa Backend API",
-    version=__version__,
+    version=BACKEND_VERSION,
     description="Hordozható SQLite + .ftree családfa adatkezelő API",
 )
 
@@ -84,8 +85,18 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "engine": "fastapi-sqlite",
-        "version": __version__,
+        "version": BACKEND_VERSION,
+        "backend_version": BACKEND_VERSION,
         "pillow_available": PILLOW_AVAILABLE,
+    }
+
+
+@app.get("/api/version")
+def version() -> dict[str, Any]:
+    return {
+        "backend_version": BACKEND_VERSION,
+        "engine": "fastapi-sqlite",
+        "schema_version": CURRENT_SCHEMA_VERSION,
     }
 
 

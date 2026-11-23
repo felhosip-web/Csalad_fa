@@ -19,6 +19,7 @@ from backend.package import export_ftree_package, import_ftree_package
 from backend.server import FamilyTreeHTTPServer
 from backend.service import MAX_UNDO_STEPS, FamilyTreeService
 from backend.validators import normalize_partial_date, validate_date_order
+from backend.version import BACKEND_VERSION
 
 # Minimal valid 1x1 PNG binary
 TINY_PNG = (
@@ -395,6 +396,13 @@ class HTTPServerIntegrationTests(unittest.TestCase):
         status, health = self._req("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(health["status"], "ok")
+        self.assertEqual(health["version"], BACKEND_VERSION)
+        self.assertEqual(health["backend_version"], BACKEND_VERSION)
+
+        status, ver = self._req("GET", "/api/version")
+        self.assertEqual(status, 200)
+        self.assertEqual(ver["backend_version"], BACKEND_VERSION)
+        self.assertEqual(ver["schema_version"], CURRENT_SCHEMA_VERSION)
 
         # 404 returns structured ok:false Hungarian error
         status, not_found = self._req("GET", "/api/ismeretlen-veg-pont")
@@ -506,6 +514,41 @@ class HTTPServerIntegrationTests(unittest.TestCase):
             spa_server.shutdown()
             spa_server.server_close()
             spa_thread.join(timeout=2)
+
+
+class VersionScriptTests(unittest.TestCase):
+    def test_semver_bump_and_path_detection(self) -> None:
+        from scripts.bump_version import (
+            bump_semver,
+            detect_targets_from_paths,
+            read_backend_version,
+            read_frontend_version,
+            write_backend_version,
+            write_frontend_version,
+        )
+
+        self.assertEqual(bump_semver("0.1.0", "patch"), "0.1.1")
+        self.assertEqual(bump_semver("0.1.5", "minor"), "0.2.0")
+        self.assertEqual(bump_semver("1.4.9", "major"), "2.0.0")
+
+        self.assertEqual(detect_targets_from_paths(["backend/server.py"]), (True, False))
+        self.assertEqual(detect_targets_from_paths(["src/App.tsx"]), (False, True))
+        self.assertEqual(detect_targets_from_paths(["backend/models.py", "src/components/Footer.tsx"]), (True, True))
+        self.assertEqual(detect_targets_from_paths(["README.md", "backend/version.py"]), (False, False))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            be_file = tmp_path / "version.py"
+            be_file.write_text('BACKEND_VERSION = "0.1.0"\n__version__ = BACKEND_VERSION\n', encoding="utf-8")
+            fe_file = tmp_path / "package.json"
+            fe_file.write_text('{\n  "name": "test",\n  "version": "0.1.0"\n}\n', encoding="utf-8")
+
+            self.assertEqual(read_backend_version(be_file), "0.1.0")
+            self.assertEqual(read_frontend_version(fe_file), "0.1.0")
+            write_backend_version("0.1.1", be_file)
+            write_frontend_version("0.2.0", fe_file)
+            self.assertEqual(read_backend_version(be_file), "0.1.1")
+            self.assertEqual(read_frontend_version(fe_file), "0.2.0")
 
 
 if __name__ == "__main__":

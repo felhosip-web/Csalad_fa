@@ -1,3 +1,5 @@
 """Családfa (Family Tree) portable Python backend package."""
 
-__version__ = "0.1.0"
+from .version import BACKEND_VERSION, __version__
+
+__all__ = ["BACKEND_VERSION", "__version__"]

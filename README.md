@@ -24,6 +24,7 @@ Linuxon és Windowson egyaránt futó, számítógéphez kevésbé értő felhas
 │   ├── package.py          # .ftree (ZIP) csomagoló és biztonságos kicsomagoló
 │   ├── repository.py       # Paraméterezett SQLite CRUD réteg
 │   ├── service.py          # Üzleti logika (ciklusvédelem, gyors hozzáadás, testvérszámítás)
+│   ├── version.py          # Backend verziószám egyetlen forrása
 │   ├── server.py           # Nulla külső függőséges Python HTTP API szerver
 │   ├── fastapi_app.py      # Opcionális FastAPI + Uvicorn belépési pont
 │   ├── requirements.txt    # Python függőségek (Pillow, FastAPI, Uvicorn, pytest)
@@ -32,8 +33,8 @@ Linuxon és Windowson egyaránt futó, számítógéphez kevésbé értő felhas
 ├── src/                    # React + TypeScript frontend (Vite)
 │   ├── api/client.ts       # Típusos API kliens
 │   ├── types/family.ts     # TypeScript domain típusok
-│   ├── components/         # Moduláris UI komponensek
-│   ├── App.tsx             # Adatszint- és API-műhely felület
+│   ├── components/         # Moduláris UI komponensek (köztük a Footer.tsx)
+│   ├── App.tsx             # Fő családfa felület
 │   └── index.css           # Tailwind CSS v4 stílusok
 ├── docs/
 │   ├── architecture.md               # Részletes architektúra és csomagformátum leírás
@@ -42,9 +43,12 @@ Linuxon és Windowson egyaránt futó, számítógéphez kevésbé értő felhas
 ├── packaging/
 │   ├── run_desktop.py                # Önálló asztali indító (beépített React + Python API)
 │   └── build_bundle.py               # PyInstaller csomagoló (Windows .zip / Linux .tar.gz)
+├── scripts/
+│   └── bump_version.py               # Backend és frontend verzióléptető szkript
 ├── .github/workflows/
 │   ├── ci.yml                        # Folyamatos ellenőrzés (tesztek, tsc, build)
-│   └── build-targets.yml             # Windows és Linux kiadási csomagok készítése
+│   ├── build-targets.yml             # Windows és Linux kiadási csomagok készítése
+│   └── version-bump.yml              # Automatikus / kézi verzióléptető workflow
 ├── server.ts                         # Helyi fejlesztői Express híd (Python API proxy + Vite)
 └── package.json
 ```

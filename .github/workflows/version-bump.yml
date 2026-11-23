@@ -1,0 +1,81 @@
+name: Verziószám léptetés
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Melyik komponens verziója lépjen? (auto = módosított mappák alapján)"
+        type: choice
+        required: true
+        default: auto
+        options:
+          - auto
+          - both
+          - backend
+          - frontend
+      bump:
+        description: "Verzióléptetés szintje"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      base_ref:
+        description: "Összehasonlítási git referencia (auto módban)"
+        type: string
+        required: false
+        default: HEAD~1
+      create_tag:
+        description: "Készítsen kiadási git taget (v...), ami elindítja a csomagolást?"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    name: Backend és frontend verzió léptetése
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kódtár letöltése teljes előzménnyel
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python 3.11 beállítása
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verziószámok kiszámítása és frissítése
+        id: bump
+        run: |
+          python scripts/bump_version.py \
+            --target "${{ inputs.target }}" \
+            --bump "${{ inputs.bump }}" \
+            --base-ref "${{ inputs.base_ref || 'HEAD~1' }}" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Backend tesztek futtatása frissített verzióval
+        if: steps.bump.outputs.backend_changed == 'true'
+        run: python3 -m unittest discover -s backend/tests -v
+
+      - name: Változások commitolása és feltöltése
+        if: steps.bump.outputs.backend_changed == 'true' || steps.bump.outputs.frontend_changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/version.py package.json
+          git commit -m "chore(version): be=${{ steps.bump.outputs.backend_version }} fe=${{ steps.bump.outputs.frontend_version }}"
+          git push
+
+      - name: Opcionális kiadási tag létrehozása
+        if: inputs.create_tag && (steps.bump.outputs.backend_changed == 'true' || steps.bump.outputs.frontend_changed == 'true')
+        run: |
+          TAG="${{ steps.bump.outputs.release_tag }}"
+          git tag -a "$TAG" -m "Kiadás: $TAG"
+          git push origin "$TAG"
