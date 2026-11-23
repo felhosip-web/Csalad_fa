@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, LocateFixed, Pencil, Plus, Search, Undo2 } from 'lucide-react';
 import { familyApi } from './api/client';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { ErrorModal } from './components/ErrorModal';
 import { FamilyTreeCanvas } from './components/FamilyTreeCanvas';
 import { PackagePanel } from './components/PackagePanel';
 import { PersonEditorDrawer } from './components/PersonEditorDrawer';
 import { QuickAddModal, type QuickAddMode } from './components/QuickAddModal';
-import type { PersonBundle, TreeSnapshot } from './types/family';
+import type { AppErrorInfo, PersonBundle, TreeSnapshot } from './types/family';
 import { GENDER_LABELS } from './types/family';
-import { formatCardYears, getInitials, translateBackendError } from './utils/hungarian';
+import { formatCardYears, getInitials, toAppErrorInfo } from './utils/hungarian';
 
 type TabView = 'tree' | 'list' | 'package';
 
@@ -35,7 +36,7 @@ export default function App() {
   const [bundle, setBundle] = useState<PersonBundle | null>(null);
   const [loading, setLoading] = useState(true);
   const [undoBusy, setUndoBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<AppErrorInfo | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [quickAdd, setQuickAdd] = useState<QuickAddMode | null>(null);
   const [focusTrigger, setFocusTrigger] = useState<{ personId: string; seq: number } | null>(null);
@@ -46,16 +47,73 @@ export default function App() {
     setToast(message);
   }, []);
 
+  const showError = useCallback(
+    (
+      err: unknown,
+      options?: {
+        title?: string;
+        fallbackMessage?: string;
+        onRetry?: () => void | Promise<void>;
+      },
+    ) => {
+      setModalError(toAppErrorInfo(err, options));
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
 
+  useEffect(() => {
+    function isIgnorableNoise(message: string): boolean {
+      const lower = message.toLowerCase();
+      return (
+        lower.includes('resizeobserver loop') ||
+        lower.includes('websocket') ||
+        lower.includes('vite')
+      );
+    }
+
+    function onUnhandledRejection(event: PromiseRejectionEvent) {
+      const reasonMsg =
+        event.reason instanceof Error
+          ? event.reason.message
+          : typeof event.reason === 'string'
+            ? event.reason
+            : '';
+      if (isIgnorableNoise(reasonMsg)) return;
+      event.preventDefault();
+      console.error('Kezeletlen aszinkron hiba:', event.reason);
+      showError(event.reason, {
+        title: 'Váratlan hiba történt',
+        fallbackMessage: 'A háttérművelet közben váratlan hiba lépett fel.',
+      });
+    }
+
+    function onWindowError(event: ErrorEvent) {
+      if (isIgnorableNoise(event.message || '')) return;
+      console.error('Váratlan felületi hiba:', event.error || event.message);
+      showError(event.error || event.message, {
+        title: 'Váratlan felületi hiba',
+        fallbackMessage: 'A felület működése közben váratlan hiba történt.',
+      });
+    }
+
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    window.addEventListener('error', onWindowError);
+    return () => {
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+      window.removeEventListener('error', onWindowError);
+    };
+  }, [showError]);
+
   const loadSnapshot = useCallback(
     async (preferPersonId?: string, feedbackMessage?: string, query = search) => {
       try {
-        setError(null);
+        setModalError(null);
         const snap = await familyApi.getTree(query);
         setSnapshot(snap);
 
@@ -79,12 +137,15 @@ export default function App() {
           showToast(feedbackMessage);
         }
       } catch (err) {
-        setError(translateBackendError(err));
+        showError(err, {
+          title: 'Betöltési hiba',
+          onRetry: () => loadSnapshot(preferPersonId, feedbackMessage, query),
+        });
       } finally {
         setLoading(false);
       }
     },
-    [search, selectedId, showToast],
+    [search, selectedId, showError, showToast],
   );
 
   useEffect(() => {
@@ -113,10 +174,10 @@ export default function App() {
         const personBundle = await familyApi.getPersonBundle(personId);
         setBundle(personBundle);
       } catch (err) {
-        setError(translateBackendError(err));
+        showError(err, { title: 'Adatlap betöltési hiba' });
       }
     },
-    [],
+    [showError],
   );
 
   const requestSelectPerson = useCallback(
@@ -150,17 +211,20 @@ export default function App() {
 
   const handleUndo = useCallback(async () => {
     setUndoBusy(true);
-    setError(null);
+    setModalError(null);
     try {
       const res = await familyApi.undo();
       setEditorDirty(false);
       await loadSnapshot(selectedId ?? undefined, `Visszavonva: ${res.undone_label}`);
     } catch (err) {
-      setError(translateBackendError(err));
+      showError(err, {
+        title: 'Visszavonási hiba',
+        onRetry: () => handleUndo(),
+      });
     } finally {
       setUndoBusy(false);
     }
-  }, [loadSnapshot, selectedId]);
+  }, [loadSnapshot, selectedId, showError]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -170,7 +234,7 @@ export default function App() {
         !e.altKey &&
         e.key.toLowerCase() === 'z';
       if (!isUndoCombo) return;
-      if (quickAdd || pendingNav) return;
+      if (quickAdd || pendingNav || modalError) return;
       if (isEditableTarget(e.target)) return;
       if (!snapshot?.undo?.can_undo || undoBusy) return;
 
@@ -179,15 +243,18 @@ export default function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, pendingNav, quickAdd, snapshot?.undo?.can_undo, undoBusy]);
+  }, [handleUndo, modalError, pendingNav, quickAdd, snapshot?.undo?.can_undo, undoBusy]);
 
   async function handleSeedSample() {
-    setError(null);
+    setModalError(null);
     try {
       await familyApi.seedSample();
       await loadSnapshot(undefined, 'A Kovács–Nagy mintacsaládfa betöltve.');
     } catch (err) {
-      setError(translateBackendError(err));
+      showError(err, {
+        title: 'Mintacsaládfa betöltési hiba',
+        onRetry: () => handleSeedSample(),
+      });
     }
   }
 
@@ -301,19 +368,6 @@ export default function App() {
 
       {/* Fő tartalom */}
       <main className="mx-auto max-w-[1600px] px-4 py-4 sm:px-6">
-        {error && (
-          <div className="mb-4 flex items-center justify-between gap-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            <span>{error}</span>
-            <button
-              type="button"
-              onClick={() => setError(null)}
-              className="text-xs font-medium underline"
-            >
-              Bezárás
-            </button>
-          </div>
-        )}
-
         {loading ? (
           <div className="h-[72vh] animate-pulse rounded-xl border border-slate-200 bg-white" />
         ) : tab === 'package' && snapshot ? (
@@ -321,6 +375,7 @@ export default function App() {
             <PackagePanel
               meta={snapshot.meta}
               onRefresh={(id, msg) => loadSnapshot(id, msg)}
+              onError={showError}
             />
           </div>
         ) : tab === 'tree' && snapshot ? (
@@ -356,6 +411,7 @@ export default function App() {
                   onOpenQuickAdd={(mode) => setQuickAdd(mode)}
                   onDirtyChange={setEditorDirty}
                   onRefresh={(id, msg) => loadSnapshot(id, msg)}
+                  onError={showError}
                 />
               </aside>
             )}
@@ -497,6 +553,7 @@ export default function App() {
                   onOpenQuickAdd={(mode) => setQuickAdd(mode)}
                   onDirtyChange={setEditorDirty}
                   onRefresh={(id, msg) => loadSnapshot(id, msg)}
+                  onError={showError}
                 />
               ) : (
                 <div className="p-10 text-center text-sm text-slate-500">
@@ -516,6 +573,7 @@ export default function App() {
           onCreated={async (createdId, msg) => {
             await loadSnapshot(createdId, msg);
           }}
+          onError={showError}
         />
       )}
 
@@ -528,6 +586,13 @@ export default function App() {
           cancelLabel="Maradok az adatlapon"
           onCancel={() => setPendingNav(null)}
           onConfirm={confirmDiscardNavigation}
+        />
+      )}
+
+      {modalError && (
+        <ErrorModal
+          error={modalError}
+          onClose={() => setModalError(null)}
         />
       )}
     </div>

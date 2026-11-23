@@ -30,9 +30,12 @@ function startPythonBackend(): ChildProcess {
   return child;
 }
 
-async function waitForPythonHealth(timeoutMs = 10000): Promise<void> {
+async function waitForPythonHealth(pyProc: ChildProcess, timeoutMs = 10000): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
+    if (pyProc.exitCode !== null) {
+      throw new Error(`Python backend exited early during startup (code=${pyProc.exitCode})`);
+    }
     try {
       const ok = await new Promise<boolean>((resolve) => {
         const req = http.get(
@@ -93,16 +96,20 @@ function proxyToPython(req: express.Request, res: express.Response): void {
 async function main(): Promise<void> {
   const pyProc = startPythonBackend();
 
-  const shutdown = () => {
-    if (!pyProc.killed) {
+  const cleanupPython = () => {
+    if (pyProc.exitCode === null && !pyProc.killed) {
       pyProc.kill('SIGTERM');
     }
+  };
+  const shutdown = () => {
+    cleanupPython();
     process.exit(0);
   };
+  process.on('exit', cleanupPython);
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  await waitForPythonHealth();
+  await waitForPythonHealth(pyProc);
 
   const app = express();
 

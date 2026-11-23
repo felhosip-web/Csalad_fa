@@ -10,11 +10,17 @@ import tempfile
 from typing import Any
 
 from .db import connect_sqlite
-from .media import delete_media_file, resolve_media_path, save_portrait_image
+from .media import (
+    _atomic_write_bytes,
+    cleanup_unused_avatars,
+    delete_media_file,
+    resolve_media_path,
+    save_portrait_image,
+)
 from .models import ConflictError, ParentChild, Person, UnionRecord, ValidationError
 from .package import (
     export_ftree_package,
-    import_ftree_package,
+    import_ftree_package_checked,
     initialize_workspace,
     read_workspace_meta,
     write_workspace_meta,
@@ -25,6 +31,7 @@ from .validators import (
     normalize_text,
     parse_bool_flag,
     utc_now_iso,
+    validate_date_order,
     validate_gender,
     validate_relation_type,
     validate_required_name,
@@ -39,7 +46,7 @@ class _UndoSnapshot:
     media_backups: dict[str, bytes]
 
 
-MAX_UNDO_STEPS = 15
+MAX_UNDO_STEPS = 25
 
 
 class FamilyTreeService:
@@ -96,16 +103,32 @@ class FamilyTreeService:
             sidecar = Path(f"{self.db_path}{suffix}")
             if sidecar.is_file():
                 sidecar.unlink()
-        self.db_path.write_bytes(snap.db_bytes)
+        _atomic_write_bytes(self.db_path, snap.db_bytes)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{self.db_path}{suffix}")
+            if sidecar.is_file():
+                sidecar.unlink()
+
         for rel, data in snap.media_backups.items():
             try:
                 target = resolve_media_path(self.workspace_dir, rel)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
+                _atomic_write_bytes(target, data)
             except ValidationError:
                 pass
+
+        conn, _repo = self._repo()
+        try:
+            avatar_rows = conn.execute(
+                "SELECT DISTINCT avatar_path FROM persons WHERE avatar_path != '';"
+            ).fetchall()
+            referenced_paths = {str(r["avatar_path"]).lstrip("/") for r in avatar_rows}
+        finally:
+            conn.close()
+        cleanup_unused_avatars(self.workspace_dir, referenced_paths)
+
         return {
             "undone_label": snap.label,
+            "message": f"Visszavonva: {snap.label}",
             "tree": self.get_tree_snapshot(),
         }
 
@@ -129,6 +152,7 @@ class FamilyTreeService:
                 "undo": {
                     "can_undo": len(self._undo_stack) > 0,
                     "last_label": self._undo_stack[-1].label if self._undo_stack else "",
+                    "steps_available": len(self._undo_stack),
                 },
             }
         finally:
@@ -185,6 +209,20 @@ class FamilyTreeService:
         conn, repo = self._repo()
         try:
             existing = repo.get_person(person_id)
+            final_birth = cleaned.get("birth_date", existing.birth_date)
+            final_death = cleaned.get("death_date", existing.death_date)
+            validate_date_order(
+                final_birth,
+                final_death,
+                earlier_label="Születési dátum",
+                later_label="Halálozási dátum",
+            )
+            if final_death:
+                if "is_living" in payload and cleaned.get("is_living") is True:
+                    raise ValidationError("Élő személyhez nem adható meg halálozási dátum.")
+                if "death_date" in cleaned and "is_living" not in payload:
+                    cleaned["is_living"] = False
+
             self._push_undo(f"Adatok módosítása: {existing.full_name}")
             person = repo.update_person(person_id, cleaned)
             return person.to_dict()
@@ -208,17 +246,23 @@ class FamilyTreeService:
 
     def upload_person_avatar(self, person_id: str, raw_bytes: bytes) -> dict[str, Any]:
         conn, repo = self._repo()
+        saved_path = ""
         try:
             existing = repo.get_person(person_id)
+            media_info = save_portrait_image(self.workspace_dir, raw_bytes)
+            saved_path = str(media_info["avatar_path"])
             self._push_undo(
                 f"Portrékép módosítása: {existing.full_name}",
                 media_paths=[existing.avatar_path] if existing.avatar_path else None,
             )
-            media_info = save_portrait_image(self.workspace_dir, raw_bytes)
             updated = repo.update_person(
                 person_id,
-                {"avatar_path": str(media_info["avatar_path"])},
+                {"avatar_path": saved_path},
             )
+        except Exception:
+            if saved_path:
+                delete_media_file(self.workspace_dir, saved_path)
+            raise
         finally:
             conn.close()
 
@@ -231,15 +275,16 @@ class FamilyTreeService:
         conn, repo = self._repo()
         try:
             existing = repo.get_person(person_id)
+            if not existing.avatar_path:
+                return existing.to_dict()
             self._push_undo(
                 f"Portrékép eltávolítása: {existing.full_name}",
-                media_paths=[existing.avatar_path] if existing.avatar_path else None,
+                media_paths=[existing.avatar_path],
             )
             updated = repo.update_person(person_id, {"avatar_path": ""})
         finally:
             conn.close()
-        if existing.avatar_path:
-            delete_media_file(self.workspace_dir, existing.avatar_path)
+        delete_media_file(self.workspace_dir, existing.avatar_path)
         return updated.to_dict()
 
     def get_person_bundle(self, person_id: str) -> dict[str, Any]:
@@ -353,6 +398,12 @@ class FamilyTreeService:
         status = validate_union_status(payload.get("status"))
         start_date = normalize_partial_date(payload.get("start_date"), field_label="Kezdő dátum")
         end_date = normalize_partial_date(payload.get("end_date"), field_label="Befejező dátum")
+        validate_date_order(
+            start_date,
+            end_date,
+            earlier_label="Kezdő dátum",
+            later_label="Befejező dátum",
+        )
         notes = normalize_text(payload.get("notes"), max_length=2000)
 
         conn, repo = self._repo()
@@ -406,6 +457,12 @@ class FamilyTreeService:
                 fields["end_date"] = normalize_partial_date(
                     payload.get("end_date"), field_label="Befejező dátum"
                 )
+            validate_date_order(
+                fields.get("start_date", existing.start_date),
+                fields.get("end_date", existing.end_date),
+                earlier_label="Kezdő dátum",
+                later_label="Befejező dátum",
+            )
             if "notes" in payload:
                 fields["notes"] = normalize_text(payload.get("notes"), max_length=2000)
 
@@ -482,6 +539,8 @@ class FamilyTreeService:
         conn, repo = self._repo()
         try:
             repo.get_person(child_id)
+            if union_id is not None:
+                repo.get_union(union_id)
             self._push_undo(f"Szülő hozzáadása: {person_fields['full_name']}")
             parent = repo.create_person(**person_fields)
             rel = repo.upsert_parent_child(
@@ -546,6 +605,12 @@ class FamilyTreeService:
         status = validate_union_status(payload.get("status"))
         start_date = normalize_partial_date(payload.get("start_date"), field_label="Kezdő dátum")
         end_date = normalize_partial_date(payload.get("end_date"), field_label="Befejező dátum")
+        validate_date_order(
+            start_date,
+            end_date,
+            earlier_label="Kezdő dátum",
+            later_label="Befejező dátum",
+        )
         union_notes = normalize_text(payload.get("union_notes"), max_length=2000)
         person_fields = self._validate_person_payload(payload, partial=False)
 
@@ -571,9 +636,13 @@ class FamilyTreeService:
         return export_ftree_package(self.workspace_dir, Path(output_path))
 
     def import_package(self, archive_path: str | Path) -> dict[str, Any]:
+        meta, warning = import_ftree_package_checked(Path(archive_path), self.workspace_dir)
         self._undo_stack.clear()
-        meta = import_ftree_package(Path(archive_path), self.workspace_dir)
-        return {"meta": meta.to_dict(), "tree": self.get_tree_snapshot()}
+        return {
+            "meta": meta.to_dict(),
+            "tree": self.get_tree_snapshot(),
+            "warning": warning,
+        }
 
     # --- Demo Sample Family (useful for testing multiple marriages & half-siblings) ---
     def seed_sample_family(self) -> dict[str, Any]:
@@ -681,7 +750,9 @@ class FamilyTreeService:
                 payload.get("full_name"), "Teljes név"
             )
         if not partial or "birth_name" in payload:
-            cleaned["birth_name"] = normalize_text(payload.get("birth_name"), max_length=200)
+            cleaned["birth_name"] = normalize_text(
+                payload.get("birth_name"), max_length=200, field_label="Születési név"
+            )
         if not partial or "gender" in payload:
             cleaned["gender"] = validate_gender(payload.get("gender"))
         if not partial or "birth_date" in payload:
@@ -698,11 +769,21 @@ class FamilyTreeService:
                 payload.get("is_living"), default=default_living
             )
         if not partial or "notes" in payload:
-            cleaned["notes"] = normalize_text(payload.get("notes"), max_length=5000)
+            cleaned["notes"] = normalize_text(
+                payload.get("notes"), max_length=5000, field_label="Megjegyzés"
+            )
 
-        # If death_date is explicitly set and is_living wasn't forced True, keep consistent
-        if not partial and cleaned.get("death_date") and "is_living" not in payload:
-            cleaned["is_living"] = False
+        if not partial:
+            validate_date_order(
+                cleaned["birth_date"],
+                cleaned["death_date"],
+                earlier_label="Születési dátum",
+                later_label="Halálozási dátum",
+            )
+            if cleaned.get("death_date"):
+                if "is_living" in payload and cleaned.get("is_living") is True:
+                    raise ValidationError("Élő személyhez nem adható meg halálozási dátum.")
+                cleaned["is_living"] = False
 
         return cleaned
 

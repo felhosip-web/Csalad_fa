@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -10,7 +11,21 @@ from typing import Callable
 from .validators import utc_now_iso
 
 CURRENT_SCHEMA_VERSION = 1
-SCHEMA_SQL_PATH = Path(__file__).resolve().parent / "schema.sql"
+
+
+def _resolve_schema_sql_path() -> Path:
+    direct = Path(__file__).resolve().parent / "schema.sql"
+    if direct.is_file():
+        return direct
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bundled = Path(meipass) / "backend" / "schema.sql"
+        if bundled.is_file():
+            return bundled
+    return direct
+
+
+SCHEMA_SQL_PATH = _resolve_schema_sql_path()
 
 
 @dataclass(frozen=True)

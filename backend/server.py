@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import mimetypes
 import os
 import tempfile
 from email.parser import BytesParser
@@ -20,8 +22,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .media import CONTENT_TYPES, PILLOW_AVAILABLE, resolve_media_path
-from .models import BackendError, PackageError, ValidationError
+from .models import BackendError, PackageError, ValidationError, format_error_payload
 from .service import FamilyTreeService
+
+logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 25 * 1024 * 1024  # 25 MB max request body
 
@@ -31,7 +35,7 @@ def _parse_multipart_file(content_type: str, body: bytes, field_name: str = "fil
     header_block = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
     msg = BytesParser(policy=email_policy).parsebytes(header_block + body)
     if not msg.is_multipart():
-        raise ValidationError("Érvénytelen multipart/form-data kérés.")
+        raise ValidationError("Érvénytelen fájlfeltöltési kérés.")
 
     first_file: bytes | None = None
     for part in msg.iter_parts():
@@ -57,8 +61,12 @@ class FamilyTreeHTTPServer(ThreadingHTTPServer):
         self,
         server_address: tuple[str, int],
         service: FamilyTreeService,
+        static_dir: str | Path | None = None,
     ) -> None:
         self.service = service
+        self.static_dir: Path | None = (
+            Path(static_dir).resolve() if static_dir is not None else None
+        )
         super().__init__(server_address, FamilyTreeRequestHandler)
 
 
@@ -68,6 +76,10 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
     @property
     def service(self) -> FamilyTreeService:
         return self.server.service  # type: ignore[attr-defined]
+
+    @property
+    def static_dir(self) -> Path | None:
+        return self.server.static_dir  # type: ignore[attr-defined]
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         if os.environ.get("FTREE_QUIET_LOGS") == "1":
@@ -108,7 +120,7 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
         try:
             length = int(raw_len)
         except ValueError as exc:
-            raise ValidationError("Érvénytelen Content-Length fejléc.") from exc
+            raise ValidationError("Érvénytelen kérésméret-fejléc.") from exc
         if length < 0 or length > MAX_BODY_BYTES:
             raise ValidationError("A kérés mérete meghaladja a megengedett korlátot.")
         return self.rfile.read(length) if length > 0 else b""
@@ -120,18 +132,24 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
         try:
             parsed = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValidationError("Érvénytelen JSON kérés törzs.") from exc
+            raise ValidationError("Érvénytelen adat formátum a kérésben.") from exc
         if not isinstance(parsed, dict):
-            raise ValidationError("A JSON kérés törzsnek objektumnak kell lennie.")
+            raise ValidationError("A kérés adatainak objektum formátumúnak kell lenniük.")
         return parsed
 
     def _handle_exception(self, exc: Exception) -> None:
         if isinstance(exc, BackendError):
+            logger.warning("Request failed (%s %s) [%s]: %s", self.command, self.path, exc.code, exc.message)
             self._send_json(exc.status_code, exc.to_dict())
             return
+        logger.exception("Unhandled server exception (%s %s)", self.command, self.path)
         self._send_json(
             HTTPStatus.INTERNAL_SERVER_ERROR,
-            {"error": {"code": "internal_error", "message": "Váratlan szerverhiba történt."}},
+            format_error_payload(
+                "internal_error",
+                "Váratlan belső szerverhiba történt.",
+                "Próbáld meg újra egy pillanat múlva.",
+            ),
         )
 
     # --- HTTP Verb Dispatchers ---
@@ -210,13 +228,58 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             rel_path = "/".join(unquote(p) for p in parts)
             target = resolve_media_path(self.service.workspace_dir, rel_path)
             if not target.is_file():
-                self._send_json(404, {"error": {"code": "not_found", "message": "A kép nem található."}})
+                self._send_json(404, format_error_payload("not_found", "A kért kép nem található."))
                 return
             ctype = CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")
             self._send_bytes(200, target.read_bytes(), content_type=ctype)
             return
 
-        self._send_json(404, {"error": {"code": "not_found", "message": "Ismeretlen végpont."}})
+        if self.static_dir is not None and not path.startswith("/api/") and path != "/api":
+            if self._serve_static_asset(path):
+                return
+
+        self._send_json(404, format_error_payload("not_found", "A kért végpont nem található."))
+
+    def _serve_static_asset(self, url_path: str) -> bool:
+        """Serve bundled React production files safely when running in desktop/standalone mode."""
+        static_root = self.static_dir
+        if static_root is None or not static_root.is_dir():
+            return False
+
+        rel = unquote(url_path.lstrip("/"))
+        target: Path | None = None
+        if rel:
+            try:
+                candidate = (static_root / rel).resolve()
+                candidate.relative_to(static_root)
+            except ValueError:
+                return False
+            if candidate.is_file():
+                target = candidate
+            elif "." in Path(rel).name:
+                # Missing static asset (e.g. .js/.css/.png) should return 404 rather than HTML
+                return False
+
+        if target is None:
+            index_file = static_root / "index.html"
+            if not index_file.is_file():
+                return False
+            target = index_file
+
+        mime_type, _ = mimetypes.guess_type(str(target))
+        ctype = mime_type or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
+            ctype = f"{ctype}; charset=utf-8"
+
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        data = target.read_bytes()
+        self.send_header("Content-Length", str(len(data)))
+        cache_control = "no-cache" if target.name == "index.html" else "public, max-age=3600"
+        self.send_header("Cache-Control", cache_control)
+        self.end_headers()
+        self.wfile.write(data)
+        return True
 
     def _route_post(self) -> None:
         parsed = urlparse(self.path)
@@ -286,7 +349,11 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             else:
                 raw_archive = body
             if not raw_archive:
-                raise PackageError("Üres .ftree csomagfájl.")
+                raise PackageError(
+                    "A kiválasztott .ftree csomagfájl üres.",
+                    code="EMPTY_ARCHIVE",
+                    hint="Válassz ki egy érvényes, nem üres .ftree fájlt.",
+                )
             with tempfile.TemporaryDirectory(prefix="ftree_up_") as tmp_dir:
                 tmp_file = Path(tmp_dir) / "upload.ftree"
                 tmp_file.write_bytes(raw_archive)
@@ -294,7 +361,7 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, res)
             return
 
-        self._send_json(404, {"error": {"code": "not_found", "message": "Ismeretlen végpont."}})
+        self._send_json(404, format_error_payload("not_found", "A kért végpont nem található."))
 
     def _route_patch(self) -> None:
         parsed = urlparse(self.path)
@@ -319,7 +386,7 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"union": updated})
             return
 
-        self._send_json(404, {"error": {"code": "not_found", "message": "Ismeretlen végpont."}})
+        self._send_json(404, format_error_payload("not_found", "A kért végpont nem található."))
 
     def _route_delete(self) -> None:
         parsed = urlparse(self.path)
@@ -347,12 +414,17 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, self.service.delete_parent_child(child_id, parent_id))
             return
 
-        self._send_json(404, {"error": {"code": "not_found", "message": "Ismeretlen végpont."}})
+        self._send_json(404, format_error_payload("not_found", "A kért végpont nem található."))
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8001, data_dir: str = "./data/workspace") -> None:
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 8001,
+    data_dir: str = "./data/workspace",
+    static_dir: str | Path | None = None,
+) -> None:
     service = FamilyTreeService(Path(data_dir))
-    server = FamilyTreeHTTPServer((host, port), service)
+    server = FamilyTreeHTTPServer((host, port), service, static_dir=static_dir)
     print(f"FamilyTree Python API listening on http://{host}:{port} (workspace={Path(data_dir).resolve()})", flush=True)
     try:
         server.serve_forever()
@@ -371,8 +443,13 @@ def main() -> None:
         default=os.environ.get("FTREE_DATA_DIR", "./data/workspace"),
         help="Aktív SQLite + media munkakönyvtár útvonala",
     )
+    parser.add_argument(
+        "--static-dir",
+        default=os.environ.get("FTREE_STATIC_DIR") or None,
+        help="Opcionális React build (dist/) könyvtár önálló futtatáshoz",
+    )
     args = parser.parse_args()
-    run_server(host=args.host, port=args.port, data_dir=args.data_dir)
+    run_server(host=args.host, port=args.port, data_dir=args.data_dir, static_dir=args.static_dir)
 
 
 if __name__ == "__main__":

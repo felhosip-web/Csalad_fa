@@ -1,4 +1,4 @@
-import type { Person } from '../types/family';
+import type { AppErrorInfo, Person } from '../types/family';
 
 /**
  * Részleges vagy teljes dátumok egységes magyar megjelenítése.
@@ -105,19 +105,26 @@ export function translateBackendError(error: unknown, fallbackStatus?: number): 
     lower.includes('failed to fetch') ||
     lower.includes('networkerror') ||
     lower.includes('network error') ||
-    lower.includes('load failed')
+    lower.includes('load failed') ||
+    lower.includes('err_connection')
   ) {
-    return 'Nem sikerült elérni a helyi háttérprogramot. Ellenőrizd a kapcsolatot, majd próbáld újra.';
+    return 'Nem sikerült elérni a helyi háttérprogramot. Ellenőrizd a kapcsolatot, majd próbáld meg újra.';
   }
 
-  if (lower.includes('timeout') || lower.includes('timed out')) {
+  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('aborterror')) {
     return 'A művelet túl sokáig tartott. Próbáld meg újra egy pillanat múlva.';
+  }
+
+  if (lower.includes('checksum')) {
+    return raw && /[áéíóöőúüű]/i.test(raw)
+      ? raw
+      : 'A kiválasztott családfa fájl ellenőrzőösszege nem egyezik, ezért a betöltés a biztonságod érdekében megszakadt.';
   }
 
   if (lower.includes('not found') || fallbackStatus === 404) {
     return raw && /[áéíóöőúüű]/i.test(raw)
       ? raw
-      : 'A keresett személy, kapcsolat vagy kép már nem található.';
+      : 'A keresett személy, kapcsolat vagy fájl már nem található.';
   }
 
   if (fallbackStatus === 413 || lower.includes('too large')) {
@@ -135,7 +142,7 @@ export function translateBackendError(error: unknown, fallbackStatus?: number): 
   }
 
   if (lower.includes('bad gateway') || fallbackStatus === 502 || fallbackStatus === 503) {
-    return 'A háttérszolgáltatás éppen indul vagy ideiglenesen nem elérhető. Várj néhány másodpercet, majd próbáld újra.';
+    return 'A háttérszolgáltatás éppen indul vagy ideiglenesen nem elérhető. Várj néhány másodpercet, majd próbáld meg újra.';
   }
 
   if (lower.includes('unauthorized') || lower.includes('forbidden')) {
@@ -154,13 +161,65 @@ export function translateBackendError(error: unknown, fallbackStatus?: number): 
     return 'Kérlek, töltsd ki a kötelező mezőket a folytatáshoz.';
   }
 
+  if (lower.includes('unexpected token') || lower.includes('json')) {
+    return 'A háttérprogram válasza nem értelmezhető. Próbáld meg újra.';
+  }
+
   if (raw && /[áéíóöőúüű]/i.test(raw)) {
     return raw;
   }
 
-  if (raw && !/^[a-z0-9_.\-: ]+$/i.test(raw)) {
+  if (raw && !/^[a-z0-9_.\-: /()]+$/i.test(raw)) {
     return raw;
   }
 
   return 'Váratlan hiba történt a művelet közben. Próbáld meg újra.';
+}
+
+interface StructuredErrorLike {
+  message?: string;
+  code?: string;
+  status?: number;
+  hint?: string;
+}
+
+/**
+ * Bármilyen hibaobjektum egységes, biztonságos Hibaablak-modellé alakítása.
+ */
+export function toAppErrorInfo(
+  error: unknown,
+  options?: {
+    title?: string;
+    fallbackMessage?: string;
+    onRetry?: () => void | Promise<void>;
+  },
+): AppErrorInfo {
+  const errObj = (error && typeof error === 'object' ? error : null) as StructuredErrorLike | null;
+  const status = typeof errObj?.status === 'number' ? errObj.status : undefined;
+  const code =
+    typeof errObj?.code === 'string' && errObj.code.trim()
+      ? errObj.code.trim()
+      : status === 0
+        ? 'NETWORK_ERROR'
+        : 'UNEXPECTED_ERROR';
+  const hint =
+    typeof errObj?.hint === 'string' && errObj.hint.trim()
+      ? translateBackendError(errObj.hint.trim())
+      : undefined;
+
+  const translated = translateBackendError(error, status);
+  const message =
+    translated === 'Váratlan hiba történt a művelet közben. Próbáld meg újra.' &&
+    options?.fallbackMessage
+      ? options.fallbackMessage
+      : translated;
+
+  return {
+    title: options?.title || 'Hiba történt',
+    message,
+    hint,
+    code,
+    status,
+    onRetry: options?.onRetry,
+  };
 }

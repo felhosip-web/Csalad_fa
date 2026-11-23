@@ -36,9 +36,16 @@ Linuxon és Windowson egyaránt futó, számítógéphez kevésbé értő felhas
 │   ├── App.tsx             # Adatszint- és API-műhely felület
 │   └── index.css           # Tailwind CSS v4 stílusok
 ├── docs/
-│   ├── architecture.md     # Részletes architektúra és csomagformátum leírás
-│   └── api-contract.md     # REST API végpontok és JSON szerződés
-├── server.ts               # Helyi fejlesztői Express híd (Python API proxy + Vite)
+│   ├── architecture.md               # Részletes architektúra és csomagformátum leírás
+│   ├── api-contract.md               # REST API végpontok és JSON szerződés
+│   └── terjesztes-linux-windows.md   # Végfelhasználói útmutató Linux és Windows csomagokhoz
+├── packaging/
+│   ├── run_desktop.py                # Önálló asztali indító (beépített React + Python API)
+│   └── build_bundle.py               # PyInstaller csomagoló (Windows .zip / Linux .tar.gz)
+├── .github/workflows/
+│   ├── ci.yml                        # Folyamatos ellenőrzés (tesztek, tsc, build)
+│   └── build-targets.yml             # Windows és Linux kiadási csomagok készítése
+├── server.ts                         # Helyi fejlesztői Express híd (Python API proxy + Vite)
 └── package.json
 ```
 
@@ -49,9 +56,14 @@ Linuxon és Windowson egyaránt futó, számítógéphez kevésbé értő felhas
 python3 -m unittest discover -s backend/tests -v
 ```
 
-### 2. Teljes alkalmazás indítása (Python backend + React frontend)
+### 2. Teljes alkalmazás indítása fejlesztői módban (Python backend + React frontend)
 ```bash
 npm install
 npm run dev
 ```
 *(Opciónálisan a Python csomagok telepítése portré-átméretezéshez és FastAPI-hoz: `pip install -r backend/requirements.txt`, majd önállóan: `uvicorn backend.fastapi_app:app --port 8001` vagy `python -m backend.server --port 8001`.)*
+
+### 3. Önálló asztali csomag (végfelhasználóknak, Node.js nélkül)
+A GitHub Releases oldaláról letölthető Linux és Windows csomagok indításához olvasd el a részletes magyar útmutatót:
+[Linux és Windows használati és telepítési útmutató](docs/terjesztes-linux-windows.md).
+

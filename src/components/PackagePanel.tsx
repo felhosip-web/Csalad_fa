@@ -1,5 +1,5 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Download, FilePlus2, Sparkles, Upload } from 'lucide-react';
+import { AlertTriangle, Download, FilePlus2, ShieldCheck, Sparkles, Upload } from 'lucide-react';
 import { familyApi } from '../api/client';
 import type { TreeMeta } from '../types/family';
 import { formatTimestampHu } from '../utils/hungarian';
@@ -8,27 +8,66 @@ import { ConfirmDialog } from './ConfirmDialog';
 interface PackagePanelProps {
   meta: TreeMeta;
   onRefresh: (selectId?: string, feedbackMessage?: string) => Promise<void>;
+  onError: (
+    err: unknown,
+    options?: {
+      title?: string;
+      fallbackMessage?: string;
+      onRetry?: () => void | Promise<void>;
+    },
+  ) => void;
 }
 
-export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
+export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
   const [treeName, setTreeName] = useState(meta.tree_name);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [importWarning, setImportWarning] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<'seed' | 'new' | null>(null);
 
   useEffect(() => {
     setTreeName(meta.tree_name);
   }, [meta.tree_name]);
 
+  const safeFilename =
+    (meta.tree_name || 'csaladfa')
+      .toLowerCase()
+      .replace(/[^a-z0-9áéíóöőúüű_-]+/gi, '_')
+      .replace(/^_+|_+$/g, '') || 'csaladfa';
+
+  async function handleExport() {
+    setBusy(true);
+    try {
+      const blob = await familyApi.exportPackageBlob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${safeFilename}.ftree`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      onError(err, {
+        title: 'Mentési hiba',
+        fallbackMessage: 'Nem sikerült letölteni a .ftree mentési fájlt.',
+        onRetry: () => handleExport(),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleRename(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
-    setError(null);
     try {
       await familyApi.renameTree(treeName);
       await onRefresh(undefined, 'A családfa neve elmentve.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Nem sikerült módosítani a nevet.');
+      onError(err, {
+        title: 'Átnevezési hiba',
+        fallbackMessage: 'Nem sikerült módosítani a családfa nevét.',
+      });
     } finally {
       setBusy(false);
     }
@@ -38,28 +77,35 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
     const file = e.target.files?.[0];
     if (!file) return;
     setBusy(true);
-    setError(null);
+    setImportWarning(null);
     try {
       const res = await familyApi.importPackage(file);
       setTreeName(res.meta.tree_name);
+      if (res.warning) {
+        setImportWarning(res.warning);
+      }
       await onRefresh(
         undefined,
-        `Családfa betöltve: ${res.meta.tree_name} (${res.meta.person_count} személy).`,
+        res.warning
+          ? `Családfa betöltve (ellenőrzőösszeg nélkül): ${res.meta.tree_name}.`
+          : `Családfa betöltve: ${res.meta.tree_name} (${res.meta.person_count} személy).`,
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'A csomag betöltése sikertelen.');
+      onError(err, {
+        title: 'Fájlbetöltési hiba',
+        fallbackMessage: 'A kiválasztott .ftree csomag betöltése nem sikerült.',
+      });
     } finally {
       setBusy(false);
       e.target.value = '';
     }
   }
 
-  async function executeResetConfirm() {
-    if (!confirmAction) return;
+  async function runDirectReset(kind: 'seed' | 'new') {
     setBusy(true);
-    setError(null);
+    setImportWarning(null);
     try {
-      if (confirmAction === 'seed') {
+      if (kind === 'seed') {
         const snap = await familyApi.seedSample();
         setTreeName(snap.meta.tree_name);
         setConfirmAction(null);
@@ -71,18 +117,20 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
         await onRefresh(undefined, 'Új, üres családfa létrehozva.');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'A művelet végrehajtása sikertelen.');
       setConfirmAction(null);
+      onError(err, {
+        title: kind === 'seed' ? 'Mintacsaládfa betöltési hiba' : 'Új családfa létrehozási hiba',
+        fallbackMessage: 'A művelet végrehajtása sikertelen.',
+      });
     } finally {
       setBusy(false);
     }
   }
 
-  const safeFilename =
-    (meta.tree_name || 'csaladfa')
-      .toLowerCase()
-      .replace(/[^a-z0-9áéíóöőúüű_-]+/gi, '_')
-      .replace(/^_+|_+$/g, '') || 'csaladfa';
+  async function executeResetConfirm() {
+    if (!confirmAction) return;
+    await runDirectReset(confirmAction);
+  }
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -96,9 +144,22 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
         </p>
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
+      {importWarning && (
+        <div
+          role="status"
+          className="flex items-start justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+            <span>{importWarning}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setImportWarning(null)}
+            className="text-xs font-medium underline shrink-0"
+          >
+            Rendben
+          </button>
         </div>
       )}
 
@@ -106,17 +167,18 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
         <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-slate-900">Mentés fájlba</h2>
           <p className="text-xs leading-relaxed text-slate-600">
-            Letölti a jelenlegi családfát az összes feltöltött portréképpel együtt egyetlen hordozható csomagfájlként.
+            Letölti a jelenlegi családfát az összes feltöltött portréképpel együtt egyetlen hordozható csomagfájlként. A mentés SHA-256 ellenőrzőösszeggel védi a fájl épségét.
           </p>
-          <a
-            href="/api/package/export"
-            download={`${safeFilename}.ftree`}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleExport()}
             title="Letölti a teljes családfát és minden portréképet egyetlen hordozható .ftree fájlban"
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-800"
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
           >
             <Download className="h-4 w-4" />
             Családfa mentése (.ftree)
-          </a>
+          </button>
         </div>
 
         <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5">
@@ -143,7 +205,13 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
 
       {/* Családfa összegzés */}
       <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
-        <h2 className="text-sm font-semibold text-slate-900">Aktív családfa adatai</h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-slate-900">Aktív családfa adatai</h2>
+          <span className="inline-flex items-center gap-1.5 text-xs text-emerald-800">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Helyi tárolás · SHA-256 védelem
+          </span>
+        </div>
         <dl className="grid grid-cols-2 gap-4 border-b border-slate-100 pb-4 text-sm sm:grid-cols-4">
           <div>
             <dt className="text-xs text-slate-500">Személyek</dt>
@@ -205,12 +273,10 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
               if (meta.person_count > 0) {
                 setConfirmAction('seed');
               } else {
-                void familyApi
-                  .seedSample()
-                  .then(() => onRefresh(undefined, 'A Kovács–Nagy mintacsaládfa betöltve.'));
+                void runDirectReset('seed');
               }
             }}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             <Sparkles className="h-3.5 w-3.5" />
             Minta családfa betöltése (Kovács–Nagy)
@@ -223,12 +289,10 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
               if (meta.person_count > 0) {
                 setConfirmAction('new');
               } else {
-                void familyApi
-                  .createNewTree('Új családfa')
-                  .then(() => onRefresh(undefined, 'Új, üres családfa létrehozva.'));
+                void runDirectReset('new');
               }
             }}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             <FilePlus2 className="h-3.5 w-3.5" />
             Új üres családfa kezdése

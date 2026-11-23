@@ -11,4 +11,8 @@ __pycache__/
 .pytest_cache/
 data/
 *.ftree
+build_pyinstaller/
+dist_bundle/
+release-artifacts/
+*.spec
 

@@ -16,31 +16,44 @@ ALLOWED_RELATION_TYPES = frozenset(
     {"biological", "adoptive", "step", "foster", "guardian"}
 )
 
-_APPROX_PREFIX_RE = re.compile(r"^(?:~|kb\.?|ca\.?|circa)\s*", re.IGNORECASE)
-_YEAR_RE = re.compile(r"^(\d{4})$")
+_APPROX_PREFIX_RE = re.compile(r"^(?:~|kb\.?|ca\.?|circa|körülbelül)\s*", re.IGNORECASE)
+_YEAR_RE = re.compile(r"^(\d{4})\.?$")
 _YEAR_MONTH_RE = re.compile(r"^(\d{4})[-./\s]+(\d{1,2})\.?$")
 _FULL_DATE_RE = re.compile(r"^(\d{4})[-./\s]+(\d{1,2})[-./\s]+(\d{1,2})\.?$")
+_NORMALIZED_DATE_RE = re.compile(r"^~?(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$")
+
+_HU_VOWELS = frozenset("aáeéiíoóöőuúüű")
+
+
+def _with_article(label: str) -> str:
+    clean = label.strip()
+    if not clean:
+        return "A mező"
+    article = "Az" if clean[0].lower() in _HU_VOWELS else "A"
+    return f"{article} {clean}"
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def normalize_text(value: object, *, max_length: int = 5000) -> str:
+def normalize_text(value: object, *, max_length: int = 5000, field_label: str = "szöveges mező") -> str:
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise ValidationError("A szöveges mező formátuma érvénytelen.")
+        raise ValidationError(f"{_with_article(field_label)} csak szöveg lehet.")
     cleaned = value.strip()
     if len(cleaned) > max_length:
-        raise ValidationError(f"A szöveg túl hosszú (maximum {max_length} karakter).")
+        raise ValidationError(
+            f"{_with_article(field_label)} túl hosszú (legfeljebb {max_length} karakter lehet)."
+        )
     return cleaned
 
 
 def validate_required_name(value: object, field_label: str = "Teljes név") -> str:
-    name = normalize_text(value, max_length=200)
+    name = normalize_text(value, max_length=200, field_label=field_label)
     if not name:
-        raise ValidationError(f"A(z) {field_label} megadása kötelező.")
+        raise ValidationError(f"{_with_article(field_label)} megadása kötelező.")
     return name
 
 
@@ -48,11 +61,11 @@ def validate_gender(value: object) -> str:
     if value is None or value == "":
         return "unknown"
     if not isinstance(value, str):
-        raise ValidationError("Érvénytelen nem (gender) érték.")
+        raise ValidationError("A nem mező értéke érvénytelen.")
     normalized = value.strip().lower()
     if normalized not in ALLOWED_GENDERS:
         raise ValidationError(
-            f"Érvénytelen nem: '{value}'. Engedélyezett értékek: {', '.join(sorted(ALLOWED_GENDERS))}."
+            f"Érvénytelen nem érték: '{value}'. Válassz a megengedett opciók közül (férfi, nő, egyéb, ismeretlen)."
         )
     return normalized
 
@@ -61,11 +74,11 @@ def validate_union_status(value: object) -> str:
     if value is None or value == "":
         return "married"
     if not isinstance(value, str):
-        raise ValidationError("Érvénytelen kapcsolat állapot.")
+        raise ValidationError("A párkapcsolat állapota érvénytelen.")
     normalized = value.strip().lower()
     if normalized not in ALLOWED_UNION_STATUSES:
         raise ValidationError(
-            f"Érvénytelen kapcsolat állapot: '{value}'. Engedélyezett értékek: {', '.join(sorted(ALLOWED_UNION_STATUSES))}."
+            f"Érvénytelen kapcsolat állapot: '{value}'. Válassz érvényes állapotot (házas, elvált, élettárs, megözvegyült, különélő, ismeretlen)."
         )
     return normalized
 
@@ -74,11 +87,11 @@ def validate_relation_type(value: object) -> str:
     if value is None or value == "":
         return "biological"
     if not isinstance(value, str):
-        raise ValidationError("Érvénytelen szülő-gyermek kapcsolat típus.")
+        raise ValidationError("A szülő–gyermek kapcsolat típusa érvénytelen.")
     normalized = value.strip().lower()
     if normalized not in ALLOWED_RELATION_TYPES:
         raise ValidationError(
-            f"Érvénytelen kapcsolat típus: '{value}'. Engedélyezett értékek: {', '.join(sorted(ALLOWED_RELATION_TYPES))}."
+            f"Érvénytelen rokonsági típus: '{value}'. Engedélyezett: vér szerinti, örökbefogadó, mostoha, nevelő, gyám."
         )
     return normalized
 
@@ -88,15 +101,15 @@ def normalize_partial_date(value: object, *, field_label: str = "Dátum") -> str
 
     Accepted inputs:
     - "" / None -> ""
-    - "1954" -> "1954"
-    - "1954-06" / "1954.06." -> "1954-06"
-    - "1954-06-15" / "1954.06.15." / "1954. 06. 15." -> "1954-06-15"
-    - Optional approximate prefix: "~1954", "kb. 1954", "ca. 1954-06" -> "~1954", "~1954-06"
+    - "1954" / "1954." -> "1954"
+    - "1954-06" / "1954. 06." -> "1954-06"
+    - "1954-06-15" / "1954. 06. 15." -> "1954-06-15"
+    - Optional approximate prefix: "~1920", "kb. 1920", "kb.1920" -> "~1920"
     """
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise ValidationError(f"A(z) {field_label} mező csak szöveg lehet.")
+        raise ValidationError(f"{_with_article(field_label)} mező csak szöveg lehet.")
 
     raw = value.strip()
     if not raw:
@@ -108,7 +121,7 @@ def normalize_partial_date(value: object, *, field_label: str = "Dátum") -> str
         raw = _APPROX_PREFIX_RE.sub("", raw).strip()
 
     if not raw:
-        raise ValidationError(f"A(z) {field_label} nem tartalmaz érvényes évszámot.")
+        raise ValidationError(f"{_with_article(field_label)} nem tartalmaz érvényes évszámot.")
 
     prefix = "~" if approx else ""
 
@@ -124,7 +137,9 @@ def normalize_partial_date(value: object, *, field_label: str = "Dátum") -> str
         month = int(m_ym.group(2))
         _validate_year(year, field_label)
         if not 1 <= month <= 12:
-            raise ValidationError(f"Érvénytelen hónap a(z) {field_label} mezőben: {month}.")
+            raise ValidationError(
+                f"Érvénytelen hónap ({month}) a következő mezőben: {field_label.lower()}."
+            )
         return f"{prefix}{year:04d}-{month:02d}"
 
     m_full = _FULL_DATE_RE.match(raw)
@@ -134,22 +149,68 @@ def normalize_partial_date(value: object, *, field_label: str = "Dátum") -> str
         day = int(m_full.group(3))
         _validate_year(year, field_label)
         if not 1 <= month <= 12:
-            raise ValidationError(f"Érvénytelen hónap a(z) {field_label} mezőben: {month}.")
+            raise ValidationError(
+                f"Érvénytelen hónap ({month}) a következő mezőben: {field_label.lower()}."
+            )
         max_day = calendar.monthrange(year, month)[1]
         if not 1 <= day <= max_day:
             raise ValidationError(
-                f"Érvénytelen nap a(z) {field_label} mezőben ({year:04d}-{month:02d}-{day:02d})."
+                f"Lehetetlen nap ({year:04d}. {month:02d}. {day:02d}.) a következő mezőben: {field_label.lower()}."
             )
         return f"{prefix}{year:04d}-{month:02d}-{day:02d}"
 
     raise ValidationError(
-        f"Érvénytelen {field_label.lower()} formátum: '{value}'. Használj pl. '1954', '1954-06', '1954-06-15' vagy '~1954' formátumot."
+        f"Érvénytelen {field_label.lower()} formátum: '{value}'. Példa elfogadott formátumokra: 1954, 1954. 06., 1954. 06. 15. vagy kb. 1920."
     )
 
 
 def _validate_year(year: int, field_label: str) -> None:
     if year < 1 or year > 2999:
-        raise ValidationError(f"Érvénytelen évszám a(z) {field_label} mezőben: {year}.")
+        raise ValidationError(
+            f"Érvénytelen évszám ({year}) a következő mezőben: {field_label.lower()}."
+        )
+
+
+def _parse_normalized_parts(normalized: str) -> tuple[int, int | None, int | None] | None:
+    if not normalized:
+        return None
+    m = _NORMALIZED_DATE_RE.match(normalized)
+    if not m:
+        return None
+    y = int(m.group(1))
+    mo = int(m.group(2)) if m.group(2) is not None else None
+    d = int(m.group(3)) if m.group(3) is not None else None
+    return y, mo, d
+
+
+def validate_date_order(
+    earlier_date: str,
+    later_date: str,
+    *,
+    earlier_label: str,
+    later_label: str,
+) -> None:
+    """Ensure two normalized partial dates are not in impossible chronological order."""
+    p1 = _parse_normalized_parts(earlier_date)
+    p2 = _parse_normalized_parts(later_date)
+    if p1 is None or p2 is None:
+        return
+
+    y1, m1, d1 = p1
+    y2, m2, d2 = p2
+    if y2 < y1:
+        raise ValidationError(
+            f"{_with_article(later_label)} ({later_date.lstrip('~')}) nem lehet korábbi, mint {_with_article(earlier_label).lower()} ({earlier_date.lstrip('~')})."
+        )
+    if y2 == y1 and m1 is not None and m2 is not None:
+        if m2 < m1:
+            raise ValidationError(
+                f"{_with_article(later_label)} nem lehet korábbi, mint {_with_article(earlier_label).lower()}."
+            )
+        if m2 == m1 and d1 is not None and d2 is not None and d2 < d1:
+            raise ValidationError(
+                f"{_with_article(later_label)} nem lehet korábbi, mint {_with_article(earlier_label).lower()}."
+            )
 
 
 def parse_bool_flag(value: object, *, default: bool = True) -> bool:
@@ -165,4 +226,4 @@ def parse_bool_flag(value: object, *, default: bool = True) -> bool:
             return True
         if low in ("false", "0", "no", "nem"):
             return False
-    raise ValidationError("Érvénytelen logikai (is_living) érték.")
+    raise ValidationError("Érvénytelen jelölés a 'Jelenleg élő személy' mezőben.")

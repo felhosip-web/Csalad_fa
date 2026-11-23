@@ -40,6 +40,14 @@ interface PersonEditorDrawerProps {
   onOpenQuickAdd: (mode: QuickAddMode) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onRefresh: (selectId?: string, feedbackMessage?: string) => Promise<void>;
+  onError: (
+    err: unknown,
+    options?: {
+      title?: string;
+      fallbackMessage?: string;
+      onRetry?: () => void | Promise<void>;
+    },
+  ) => void;
 }
 
 type PendingConfirm =
@@ -59,6 +67,7 @@ export function PersonEditorDrawer({
   onOpenQuickAdd,
   onDirtyChange,
   onRefresh,
+  onError,
 }: PersonEditorDrawerProps) {
   const { person, parents, unions, children, siblings } = bundle;
 
@@ -86,7 +95,6 @@ export function PersonEditorDrawer({
     Boolean(person.notes || unions.length > 0 || parents.length > 0 || children.length > 0),
   );
   const [saving, setSaving] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<PendingConfirm | null>(null);
 
   useEffect(() => {
@@ -97,7 +105,6 @@ export function PersonEditorDrawer({
     setDeathDate(initialValues.deathDate);
     setIsLiving(initialValues.isLiving);
     setNotes(initialValues.notes);
-    setLocalError(null);
   }, [initialValues]);
 
   const hasUnsavedChanges = useMemo(
@@ -161,7 +168,6 @@ export function PersonEditorDrawer({
   async function handleSavePerson(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
-    setLocalError(null);
     try {
       await familyApi.updatePerson(person.id, {
         full_name: fullName,
@@ -174,9 +180,10 @@ export function PersonEditorDrawer({
       });
       await onRefresh(person.id, 'A változások elmentve.');
     } catch (err) {
-      setLocalError(
-        err instanceof Error ? err.message : 'Nem sikerült elmenteni az adatokat.',
-      );
+      onError(err, {
+        title: 'Mentési hiba',
+        fallbackMessage: 'Nem sikerült elmenteni a személy adatait.',
+      });
     } finally {
       setSaving(false);
     }
@@ -186,14 +193,14 @@ export function PersonEditorDrawer({
     const file = e.target.files?.[0];
     if (!file) return;
     setSaving(true);
-    setLocalError(null);
     try {
       await familyApi.uploadAvatar(person.id, file);
       await onRefresh(person.id, 'A portrékép frissítve.');
     } catch (err) {
-      setLocalError(
-        err instanceof Error ? err.message : 'Nem sikerült feltölteni a képet.',
-      );
+      onError(err, {
+        title: 'Képfeltöltési hiba',
+        fallbackMessage: 'Nem sikerült feltölteni a portréképet.',
+      });
     } finally {
       setSaving(false);
       e.target.value = '';
@@ -204,14 +211,14 @@ export function PersonEditorDrawer({
     unionId: string,
     patch: Partial<{ status: UnionStatus; start_date: string; end_date: string }>,
   ) {
-    setLocalError(null);
     try {
       await familyApi.updateUnion(unionId, patch);
       await onRefresh(person.id, 'A kapcsolat adatai frissítve.');
     } catch (err) {
-      setLocalError(
-        err instanceof Error ? err.message : 'Nem sikerült módosítani a kapcsolatot.',
-      );
+      onError(err, {
+        title: 'Kapcsolat mentési hiba',
+        fallbackMessage: 'Nem sikerült módosítani a párkapcsolat adatait.',
+      });
     }
   }
 
@@ -221,7 +228,6 @@ export function PersonEditorDrawer({
     unionId: string | null,
     relationType: RelationType,
   ) {
-    setLocalError(null);
     try {
       await familyApi.upsertRelation({
         child_id: childId,
@@ -231,9 +237,10 @@ export function PersonEditorDrawer({
       });
       await onRefresh(person.id, 'A rokonsági jelleg frissítve.');
     } catch (err) {
-      setLocalError(
-        err instanceof Error ? err.message : 'Nem sikerült módosítani a kapcsolatot.',
-      );
+      onError(err, {
+        title: 'Rokonsági kapcsolat hiba',
+        fallbackMessage: 'Nem sikerült módosítani a rokonsági kapcsolatot.',
+      });
     }
   }
 
@@ -252,7 +259,6 @@ export function PersonEditorDrawer({
     }
 
     setSaving(true);
-    setLocalError(null);
     try {
       if (confirmState.kind === 'delete_person') {
         await familyApi.deletePerson(person.id);
@@ -286,10 +292,11 @@ export function PersonEditorDrawer({
         await onRefresh(person.id, 'A szülő–gyermek kapcsolat bontva.');
       }
     } catch (err) {
-      setLocalError(
-        err instanceof Error ? err.message : 'A művelet végrehajtása sikertelen.',
-      );
       setConfirmState(null);
+      onError(err, {
+        title: 'Törlési hiba',
+        fallbackMessage: 'A művelet végrehajtása sikertelen.',
+      });
     } finally {
       setSaving(false);
     }
@@ -415,12 +422,6 @@ export function PersonEditorDrawer({
             Gyermek hozzáadása
           </button>
         </div>
-
-        {localError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-700">
-            {localError}
-          </div>
-        )}
 
         {/* 1. Szekció: Alapadatok (mindig látható) */}
         <form onSubmit={handleSavePerson} className="space-y-4">

@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import io
+import logging
+import os
+import tempfile
 import uuid
 from pathlib import Path
 
 from .models import ValidationError
+
+logger = logging.getLogger(__name__)
 
 try:
     from PIL import Image, ImageOps, UnidentifiedImageError
@@ -33,9 +38,11 @@ CONTENT_TYPES = {
 
 def detect_image_extension(raw_bytes: bytes) -> str | None:
     """Validate image magic bytes without relying on user-supplied filenames."""
-    if len(raw_bytes) < 12:
+    if len(raw_bytes) < 16:
         return None
     if raw_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        if b"IHDR" not in raw_bytes[8:20]:
+            return None
         return ".png"
     if raw_bytes.startswith(b"\xff\xd8\xff"):
         return ".jpg"
@@ -61,18 +68,28 @@ def resolve_media_path(workspace_dir: Path, relative_path: str) -> Path:
     return target
 
 
-def save_portrait_image(workspace_dir: Path, raw_bytes: bytes) -> dict[str, object]:
-    """Validate, optimize/resize (with Pillow when available), and store a portrait.
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".tmp_img_", suffix=target.suffix)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
-    Returns a dictionary containing:
-    - avatar_path: POSIX relative path (e.g. 'media/avatars/<uuid>.webp')
-    - optimized: bool (True if Pillow resized/re-encoded it)
-    - byte_size: int
-    """
+
+def save_portrait_image(workspace_dir: Path, raw_bytes: bytes) -> dict[str, object]:
+    """Validate, optimize/resize (with Pillow when available), and store a portrait atomically."""
     if not raw_bytes:
-        raise ValidationError("Üres képfájl.")
+        raise ValidationError("Üres képfájl. Válassz ki egy érvényes portréképet.")
     if len(raw_bytes) > MAX_UPLOAD_BYTES:
-        raise ValidationError("A feltöltött kép túl nagy (maximum 10 MB).")
+        raise ValidationError("A feltöltött képfájl túl nagy (legfeljebb 10 MB lehet).")
 
     avatars_dir = (workspace_dir / "media" / "avatars").resolve()
     avatars_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +99,7 @@ def save_portrait_image(workspace_dir: Path, raw_bytes: bytes) -> dict[str, obje
     if PILLOW_AVAILABLE and Image is not None and ImageOps is not None:
         try:
             with Image.open(io.BytesIO(raw_bytes)) as img:
+                img.load()
                 img = ImageOps.exif_transpose(img)
                 if img.mode in ("RGBA", "LA", "P"):
                     background = Image.new("RGBA", img.size, (255, 255, 255, 255))
@@ -108,7 +126,7 @@ def save_portrait_image(workspace_dir: Path, raw_bytes: bytes) -> dict[str, obje
                 processed_bytes = out.getvalue()
                 rel_path = f"media/avatars/{file_id}{ext}"
                 target = resolve_media_path(workspace_dir, rel_path)
-                target.write_bytes(processed_bytes)
+                _atomic_write_bytes(target, processed_bytes)
                 return {
                     "avatar_path": rel_path,
                     "optimized": True,
@@ -116,18 +134,33 @@ def save_portrait_image(workspace_dir: Path, raw_bytes: bytes) -> dict[str, obje
                     "width": img.width,
                     "height": img.height,
                 }
-        except UnidentifiedImageError as exc:
-            raise ValidationError("A feltöltött fájl nem érvényes kép (PNG, JPG vagy WEBP).") from exc
+        except (UnidentifiedImageError, OSError, ValueError, SyntaxError, EOFError) as exc:
+            logger.warning("Portrait processing failed: %s", exc)
+            raise ValidationError(
+                "A feltöltött képfájl sérült, hibás vagy nem támogatott formátumú.",
+                code="INVALID_IMAGE",
+                hint="Csak érvényes PNG, JPG vagy WEBP képfájl tölthető fel.",
+            ) from exc
 
-    # Minimal-runtime fallback: verify magic bytes and store safely
+    # Minimal-runtime fallback: verify magic bytes and store atomically
     ext = detect_image_extension(raw_bytes)
     if ext is None:
         raise ValidationError(
-            "Csak érvényes PNG, JPEG vagy WEBP képfájl tölthető fel."
+            "A feltöltött fájl nem érvényes vagy támogatott kép.",
+            code="INVALID_IMAGE",
+            hint="Csak érvényes PNG, JPG vagy WEBP képfájl tölthető fel.",
         )
     rel_path = f"media/avatars/{file_id}{ext}"
     target = resolve_media_path(workspace_dir, rel_path)
-    target.write_bytes(raw_bytes)
+    try:
+        _atomic_write_bytes(target, raw_bytes)
+    except OSError as exc:
+        logger.exception("Failed to write portrait image safely")
+        raise ValidationError(
+            "Nem sikerült elmenteni a portréképet a tárhelyre.",
+            code="MEDIA_WRITE_ERROR",
+            hint="Ellenőrizd a szabad tárhelyet és próbáld meg újra.",
+        ) from exc
     return {
         "avatar_path": rel_path,
         "optimized": False,
@@ -141,7 +174,24 @@ def delete_media_file(workspace_dir: Path, relative_path: str) -> None:
         return
     try:
         target = resolve_media_path(workspace_dir, relative_path)
-    except ValidationError:
-        return
-    if target.is_file():
-        target.unlink()
+        if target.is_file():
+            target.unlink(missing_ok=True)
+    except (ValidationError, OSError) as exc:
+        logger.warning("Could not remove media file %s: %s", relative_path, exc)
+
+
+def cleanup_unused_avatars(workspace_dir: Path, referenced_paths: set[str]) -> int:
+    """Remove any unreferenced files in media/avatars/ and return count removed."""
+    avatars_dir = (workspace_dir / "media" / "avatars").resolve()
+    if not avatars_dir.is_dir():
+        return 0
+    normalized_refs = {p.lstrip("/") for p in referenced_paths if p}
+    removed = 0
+    for item in avatars_dir.iterdir():
+        if not item.is_file():
+            continue
+        rel = f"media/avatars/{item.name}"
+        if rel not in normalized_refs:
+            item.unlink(missing_ok=True)
+            removed += 1
+    return removed

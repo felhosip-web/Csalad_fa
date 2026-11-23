@@ -99,7 +99,7 @@ class FamilyRepository:
     def get_person(self, person_id: str) -> Person:
         row = self.conn.execute("SELECT * FROM persons WHERE id = ?;", (person_id,)).fetchone()
         if row is None:
-            raise NotFoundError(f"A személy nem található (id={person_id}).")
+            raise NotFoundError("A keresett személy nem található.")
         return _row_to_person(row)
 
     def create_person(
@@ -217,7 +217,7 @@ class FamilyRepository:
     def get_union(self, union_id: str) -> UnionRecord:
         row = self.conn.execute("SELECT * FROM unions WHERE id = ?;", (union_id,)).fetchone()
         if row is None:
-            raise NotFoundError(f"A párkapcsolat/házasság nem található (id={union_id}).")
+            raise NotFoundError("A keresett párkapcsolat vagy házasság nem található.")
         return _row_to_union(row)
 
     def create_union(
@@ -313,7 +313,7 @@ class FamilyRepository:
             (child_id, parent_id),
         ).fetchone()
         if row is None:
-            raise NotFoundError("A szülő-gyermek kapcsolat nem található.")
+            raise NotFoundError("A szülő–gyermek kapcsolat nem található.")
         return _row_to_parent_child(row)
 
     def upsert_parent_child(

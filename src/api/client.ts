@@ -15,12 +15,29 @@ import { translateBackendError } from '../utils/hungarian';
 export class ApiError extends Error {
   status: number;
   code: string;
+  hint?: string;
 
-  constructor(message: string, status: number, code = 'api_error') {
+  constructor(message: string, status: number, code = 'api_error', hint?: string) {
     super(message);
+    this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.hint = hint;
   }
+}
+
+async function parseErrorResponse(res: Response): Promise<ApiError> {
+  const contentType = res.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
+  const data = isJson ? await res.json().catch(() => null) : null;
+  const rawMsg = data?.error?.message || res.statusText;
+  const msg = translateBackendError(rawMsg, res.status);
+  const code = typeof data?.error?.code === 'string' ? data.error.code : 'HTTP_ERROR';
+  const hint =
+    typeof data?.error?.hint === 'string' && data.error.hint.trim()
+      ? translateBackendError(data.error.hint)
+      : undefined;
+  return new ApiError(msg, res.status, code, hint);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -28,18 +45,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(path, init);
   } catch (err) {
-    throw new ApiError(translateBackendError(err), 0, 'network_error');
+    throw new ApiError(
+      translateBackendError(err),
+      0,
+      'NETWORK_ERROR',
+      'Ellenőrizd, hogy fut-e a helyi háttérprogram, majd próbáld meg újra.',
+    );
+  }
+
+  if (!res.ok) {
+    throw await parseErrorResponse(res);
+  }
+
+  if (res.status === 204) {
+    return undefined as T;
   }
 
   const contentType = res.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
   const data = isJson ? await res.json().catch(() => null) : null;
-
-  if (!res.ok) {
-    const rawMsg = data?.error?.message || res.statusText;
-    const msg = translateBackendError(rawMsg, res.status);
-    const code = data?.error?.code || 'http_error';
-    throw new ApiError(msg, res.status, code);
+  if (isJson && data === null) {
+    throw new ApiError(
+      'A háttérprogram válasza nem értelmezhető.',
+      res.status,
+      'INVALID_RESPONSE',
+    );
   }
   return data as T;
 }
@@ -250,8 +280,8 @@ export const familyApi = {
     );
   },
 
-  undo(): Promise<{ undone_label: string; tree: TreeSnapshot }> {
-    return request<{ undone_label: string; tree: TreeSnapshot }>('/api/undo', {
+  undo(): Promise<{ undone_label: string; message?: string; tree: TreeSnapshot }> {
+    return request<{ undone_label: string; message?: string; tree: TreeSnapshot }>('/api/undo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -270,12 +300,41 @@ export const familyApi = {
     });
   },
 
-  importPackage(file: File): Promise<{ meta: TreeMeta; tree: TreeSnapshot }> {
+  importPackage(file: File): Promise<{ meta: TreeMeta; tree: TreeSnapshot; warning?: string | null }> {
     const form = new FormData();
     form.append('file', file);
-    return request<{ meta: TreeMeta; tree: TreeSnapshot }>('/api/package/import', {
-      method: 'POST',
-      body: form,
-    });
+    return request<{ meta: TreeMeta; tree: TreeSnapshot; warning?: string | null }>(
+      '/api/package/import',
+      {
+        method: 'POST',
+        body: form,
+      },
+    );
+  },
+
+  async exportPackageBlob(): Promise<Blob> {
+    let res: Response;
+    try {
+      res = await fetch('/api/package/export');
+    } catch (err) {
+      throw new ApiError(
+        translateBackendError(err),
+        0,
+        'NETWORK_ERROR',
+        'Ellenőrizd a kapcsolatot, majd próbáld meg újra a mentést.',
+      );
+    }
+    if (!res.ok) {
+      throw await parseErrorResponse(res);
+    }
+    const blob = await res.blob();
+    if (!blob || blob.size === 0) {
+      throw new ApiError(
+        'A letöltött .ftree mentési fájl üres.',
+        res.status,
+        'EMPTY_EXPORT',
+      );
+    }
+    return blob;
   },
 };

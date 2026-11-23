@@ -6,18 +6,23 @@ Run with:
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, File, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .media import CONTENT_TYPES, PILLOW_AVAILABLE, resolve_media_path
-from .models import BackendError, PackageError
+from .models import BackendError, PackageError, format_error_payload
 from .service import FamilyTreeService
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(os.environ.get("FTREE_DATA_DIR", "./data/workspace"))
 service = FamilyTreeService(DATA_DIR)
@@ -30,8 +35,48 @@ app = FastAPI(
 
 
 @app.exception_handler(BackendError)
-async def backend_error_handler(_request: Request, exc: BackendError) -> JSONResponse:
+async def backend_error_handler(request: Request, exc: BackendError) -> JSONResponse:
+    logger.warning("API error on %s %s [%s]: %s", request.method, request.url.path, exc.code, exc.message)
     return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    logger.warning("Request validation error on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=422,
+        content=format_error_payload(
+            "validation_error",
+            "A kérés adatai hiányosak vagy érvénytelen formátumúak.",
+        ),
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    logger.warning("HTTP %s on %s %s", exc.status_code, request.method, request.url.path)
+    if exc.status_code == 404:
+        return JSONResponse(
+            status_code=404,
+            content=format_error_payload("not_found", "A kért végpont vagy fájl nem található."),
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=format_error_payload("http_error", "A kérés feldolgozása sikertelen."),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, _exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled FastAPI exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content=format_error_payload(
+            "internal_error",
+            "Váratlan belső szerverhiba történt.",
+            "Próbáld meg újra egy pillanat múlva.",
+        ),
+    )
 
 
 @app.get("/api/health")
@@ -147,7 +192,11 @@ def export_package() -> Response:
 async def import_package(file: UploadFile = File(...)) -> dict[str, Any]:
     raw_bytes = await file.read()
     if not raw_bytes:
-        raise PackageError("Üres .ftree csomagfájl.")
+        raise PackageError(
+            "A kiválasztott .ftree csomagfájl üres.",
+            code="EMPTY_ARCHIVE",
+            hint="Válassz ki egy érvényes, nem üres .ftree fájlt.",
+        )
     with tempfile.TemporaryDirectory(prefix="ftree_up_") as tmp_dir:
         tmp_file = Path(tmp_dir) / "upload.ftree"
         tmp_file.write_bytes(raw_bytes)

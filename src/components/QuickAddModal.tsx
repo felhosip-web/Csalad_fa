@@ -31,6 +31,14 @@ interface QuickAddModalProps {
   existingPersons?: Person[];
   onClose: () => void;
   onCreated: (createdPersonId: string, feedbackMessage: string) => Promise<void>;
+  onError: (
+    err: unknown,
+    options?: {
+      title?: string;
+      fallbackMessage?: string;
+      onRetry?: () => void | Promise<void>;
+    },
+  ) => void;
 }
 
 export function QuickAddModal({
@@ -38,6 +46,7 @@ export function QuickAddModal({
   existingPersons = [],
   onClose,
   onCreated,
+  onError,
 }: QuickAddModalProps) {
   const canLinkExisting = mode.type !== 'root' && existingPersons.length > 1;
   const [sourceTab, setSourceTab] = useState<'new' | 'existing'>('new');
@@ -62,7 +71,6 @@ export function QuickAddModal({
   const [startDate, setStartDate] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -99,7 +107,6 @@ export function QuickAddModal({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
     setSubmitting(true);
 
     try {
@@ -108,7 +115,13 @@ export function QuickAddModal({
 
       if (sourceTab === 'existing' && mode.type !== 'root') {
         if (!selectedExistingId) {
-          setError('Válassz ki egy meglévő személyt a listából.');
+          onError(
+            {
+              code: 'MISSING_SELECTION',
+              message: 'Válassz ki egy meglévő személyt a listából a folytatáshoz.',
+            },
+            { title: 'Hiányzó kiválasztás' },
+          );
           setSubmitting(false);
           return;
         }
@@ -213,9 +226,10 @@ export function QuickAddModal({
       await onCreated(targetFocusId, feedbackMsg);
       onClose();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Hiba történt a mentés közben.',
-      );
+      onError(err, {
+        title: 'Mentési hiba',
+        fallbackMessage: 'Hiba történt a családtag mentése közben.',
+      });
     } finally {
       setSubmitting(false);
     }
@@ -590,12 +604,6 @@ export function QuickAddModal({
                 />
               </div>
             </div>
-          )}
-
-          {error && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              {error}
-            </p>
           )}
 
           <div className="flex items-center justify-end gap-2 pt-2">

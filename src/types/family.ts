@@ -55,11 +55,23 @@ export interface TreeMeta {
   person_count: number;
   union_count: number;
   relation_count: number;
+  checksum_algorithm?: string;
+  checksums?: Record<string, string>;
 }
 
 export interface UndoState {
   can_undo: boolean;
   last_label: string;
+  steps_available?: number;
+}
+
+export interface AppErrorInfo {
+  title?: string;
+  message: string;
+  hint?: string;
+  code?: string;
+  status?: number;
+  onRetry?: () => void | Promise<void>;
 }
 
 export interface TreeSnapshot {
