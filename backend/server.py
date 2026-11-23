@@ -73,6 +73,7 @@ class FamilyTreeHTTPServer(ThreadingHTTPServer):
 
 class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    disable_nagle_algorithm = True
 
     @property
     def service(self) -> FamilyTreeService:
@@ -94,8 +95,11 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(raw)
+        self.wfile.flush()
 
     def _send_bytes(
         self,
@@ -111,8 +115,11 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
         if filename:
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
+        self.wfile.flush()
 
     def _read_body(self) -> bytes:
         raw_len = self.headers.get("Content-Length")
@@ -224,6 +231,11 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, self.service.get_person_bundle(person_id))
             return
 
+        if path == "/api/sources":
+            search = qs.get("search", [""])[0]
+            self._send_json(200, {"sources": self.service.list_sources(search=search)})
+            return
+
         if path == "/api/package/export":
             with tempfile.TemporaryDirectory(prefix="ftree_dl_") as tmp_dir:
                 out_file = Path(tmp_dir) / "csaladfa.ftree"
@@ -234,6 +246,16 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
                 data,
                 content_type="application/octet-stream",
                 filename="csaladfa.ftree",
+            )
+            return
+
+        if path == "/api/gedcom/export":
+            ged_bytes = self.service.export_gedcom().encode("utf-8")
+            self._send_bytes(
+                200,
+                ged_bytes,
+                content_type="text/plain; charset=utf-8",
+                filename="csaladfa.ged",
             )
             return
 
@@ -290,8 +312,11 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         cache_control = "no-cache" if target.name == "index.html" else "public, max-age=3600"
         self.send_header("Cache-Control", cache_control)
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
+        self.wfile.flush()
         return True
 
     def _route_post(self) -> None:
@@ -329,6 +354,15 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
                 res = self.service.upload_person_avatar(person_id, raw_img)
                 self._send_json(200, res)
                 return
+            if action == "sources":
+                res = self.service.add_source_to_person(person_id, self._read_json())
+                self._send_json(201, res)
+                return
+
+        if path == "/api/sources":
+            created = self.service.create_source(self._read_json())
+            self._send_json(201, {"source": created})
+            return
 
         if path == "/api/unions":
             created = self.service.create_union(self._read_json())
@@ -374,6 +408,23 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, res)
             return
 
+        if path == "/api/gedcom/import":
+            ctype = self.headers.get("Content-Type", "")
+            body = self._read_body()
+            if "multipart/form-data" in ctype.lower():
+                raw_gedcom = _parse_multipart_file(ctype, body, field_name="file")
+            else:
+                raw_gedcom = body
+            if not raw_gedcom:
+                raise PackageError(
+                    "A kiválasztott GEDCOM (.ged) fájl üres.",
+                    code="EMPTY_GEDCOM",
+                    hint="Válassz ki egy érvényes, adatokat tartalmazó .ged fájlt.",
+                )
+            res = self.service.import_gedcom(raw_gedcom)
+            self._send_json(200, res)
+            return
+
         self._send_json(404, format_error_payload("not_found", "A kért végpont nem található."))
 
     def _route_patch(self) -> None:
@@ -399,6 +450,12 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"union": updated})
             return
 
+        if len(parts) == 3 and parts[:2] == ["api", "sources"]:
+            source_id = unquote(parts[2])
+            updated = self.service.update_source(source_id, self._read_json())
+            self._send_json(200, {"source": updated})
+            return
+
         self._send_json(404, format_error_payload("not_found", "A kért végpont nem található."))
 
     def _route_delete(self) -> None:
@@ -414,6 +471,17 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "persons"] and parts[3] == "avatar":
             person_id = unquote(parts[2])
             self._send_json(200, {"person": self.service.remove_person_avatar(person_id)})
+            return
+
+        if len(parts) == 5 and parts[:2] == ["api", "persons"] and parts[3] == "sources":
+            person_id = unquote(parts[2])
+            source_id = unquote(parts[4])
+            self._send_json(200, self.service.remove_source_from_person(person_id, source_id))
+            return
+
+        if len(parts) == 3 and parts[:2] == ["api", "sources"]:
+            source_id = unquote(parts[2])
+            self._send_json(200, self.service.delete_source(source_id))
             return
 
         if len(parts) == 3 and parts[:2] == ["api", "unions"]:

@@ -15,6 +15,9 @@ ALLOWED_UNION_STATUSES = frozenset(
 ALLOWED_RELATION_TYPES = frozenset(
     {"biological", "adoptive", "step", "foster", "guardian"}
 )
+ALLOWED_SOURCE_TYPES = frozenset(
+    {"registry", "photo", "oral_history", "document", "other"}
+)
 
 _APPROX_PREFIX_RE = re.compile(r"^(?:~|kb\.?|ca\.?|circa|körülbelül)\s*", re.IGNORECASE)
 _YEAR_RE = re.compile(r"^(\d{4})\.?$")
@@ -92,6 +95,19 @@ def validate_relation_type(value: object) -> str:
     if normalized not in ALLOWED_RELATION_TYPES:
         raise ValidationError(
             f"Érvénytelen rokonsági típus: '{value}'. Engedélyezett: vér szerinti, örökbefogadó, mostoha, nevelő, gyám."
+        )
+    return normalized
+
+
+def validate_source_type(value: object) -> str:
+    if value is None or value == "":
+        return "document"
+    if not isinstance(value, str):
+        raise ValidationError("A forrás típusa érvénytelen.")
+    normalized = value.strip().lower()
+    if normalized not in ALLOWED_SOURCE_TYPES:
+        raise ValidationError(
+            f"Érvénytelen forrástípus: '{value}'. Engedélyezett: anyakönyv, fénykép, családi elbeszélés, dokumentum, egyéb."
         )
     return normalized
 

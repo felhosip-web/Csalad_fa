@@ -1,5 +1,14 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { AlertTriangle, Download, FilePlus2, ShieldCheck, Sparkles, Upload } from 'lucide-react';
+import {
+  AlertTriangle,
+  Download,
+  FileDown,
+  FilePlus2,
+  FileUp,
+  ShieldCheck,
+  Sparkles,
+  Upload,
+} from 'lucide-react';
 import { familyApi } from '../api/client';
 import type { TreeMeta } from '../types/family';
 import { formatTimestampHu } from '../utils/hungarian';
@@ -18,11 +27,16 @@ interface PackagePanelProps {
   ) => void;
 }
 
+type ConfirmActionState =
+  | { kind: 'seed' }
+  | { kind: 'new' }
+  | { kind: 'import_gedcom'; file: File };
+
 export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
   const [treeName, setTreeName] = useState(meta.tree_name);
   const [busy, setBusy] = useState(false);
   const [importWarning, setImportWarning] = useState<string | null>(null);
-  const [confirmAction, setConfirmAction] = useState<'seed' | 'new' | null>(null);
+  const [confirmAction, setConfirmAction] = useState<ConfirmActionState | null>(null);
 
   useEffect(() => {
     setTreeName(meta.tree_name);
@@ -51,6 +65,29 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
         title: 'Mentési hiba',
         fallbackMessage: 'Nem sikerült letölteni a .ftree mentési fájlt.',
         onRetry: () => handleExport(),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleExportGedcom() {
+    setBusy(true);
+    try {
+      const blob = await familyApi.exportGedcomBlob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${safeFilename}.ged`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      onError(err, {
+        title: 'GEDCOM exportálási hiba',
+        fallbackMessage: 'Nem sikerült exportálni a családfát .ged formátumba.',
+        onRetry: () => handleExportGedcom(),
       });
     } finally {
       setBusy(false);
@@ -101,6 +138,39 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
     }
   }
 
+  async function executeGedcomImport(file: File) {
+    setBusy(true);
+    setImportWarning(null);
+    try {
+      const res = await familyApi.importGedcom(file);
+      setTreeName(res.meta.tree_name);
+      setConfirmAction(null);
+      await onRefresh(
+        undefined,
+        `GEDCOM betöltve: ${res.meta.tree_name} (${res.imported.person_count} személy, ${res.imported.union_count} kapcsolat, ${res.imported.source_count} forrás).`,
+      );
+    } catch (err) {
+      setConfirmAction(null);
+      onError(err, {
+        title: 'GEDCOM betöltési hiba',
+        fallbackMessage: 'A kiválasztott .ged fájl feldolgozása nem sikerült.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleGedcomSelect(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (meta.person_count > 0) {
+      setConfirmAction({ kind: 'import_gedcom', file });
+    } else {
+      void executeGedcomImport(file);
+    }
+  }
+
   async function runDirectReset(kind: 'seed' | 'new') {
     setBusy(true);
     setImportWarning(null);
@@ -129,7 +199,11 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
 
   async function executeResetConfirm() {
     if (!confirmAction) return;
-    await runDirectReset(confirmAction);
+    if (confirmAction.kind === 'import_gedcom') {
+      await executeGedcomImport(confirmAction.file);
+      return;
+    }
+    await runDirectReset(confirmAction.kind);
   }
 
   return (
@@ -167,14 +241,14 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
         <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5">
           <h2 className="text-sm font-semibold text-slate-900">Mentés fájlba</h2>
           <p className="text-xs leading-relaxed text-slate-600">
-            Letölti a jelenlegi családfát az összes feltöltött portréképpel együtt egyetlen hordozható csomagfájlként. A mentés SHA-256 ellenőrzőösszeggel védi a fájl épségét.
+            Letölti a jelenlegi családfát az összes feltöltött portréképpel és forrással együtt egyetlen hordozható csomagfájlként. A mentés SHA-256 ellenőrzőösszeggel védi a fájl épségét.
           </p>
           <button
             type="button"
             disabled={busy}
             onClick={() => void handleExport()}
             title="Letölti a teljes családfát és minden portréképet egyetlen hordozható .ftree fájlban"
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50 whitespace-nowrap"
           >
             <Download className="h-4 w-4" />
             Családfa mentése (.ftree)
@@ -188,7 +262,7 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
           </p>
           <label
             title="Korábban elmentett családfa csomag (.ftree) betöltése a számítógépről"
-            className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Upload className="h-4 w-4" />
             Családfa megnyitása fájlból
@@ -197,6 +271,47 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
               accept=".ftree,.zip"
               disabled={busy}
               onChange={handleImport}
+              className="hidden"
+            />
+          </label>
+        </div>
+      </div>
+
+      {/* GEDCOM átjárhatóság */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">Exportálás GEDCOM (.ged) formátumba</h2>
+          <p className="text-xs leading-relaxed text-slate-600">
+            Szabványos UTF-8 szöveges <span className="font-mono">.ged</span> fájlt készít a személyekről, kapcsolatokról és forrásokról, amelyet más családfakutató programok is be tudnak olvasni.
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleExportGedcom()}
+            title="Letölti a családfa szöveges adatait és forrásait szabványos .ged fájlként"
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+          >
+            <FileDown className="h-4 w-4 text-emerald-700" />
+            Exportálás GEDCOM fájlba (.ged)
+          </button>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">Importálás GEDCOM (.ged) fájlból</h2>
+          <p className="text-xs leading-relaxed text-slate-600">
+            Beolvassa más családfa-szoftverből származó <span className="font-mono">.ged</span> fájl személyeit, családjait és forrásait. A betöltés után a Visszavonás gombbal visszaállíthatod az előző állapotot.
+          </p>
+          <label
+            title="Szabványos GEDCOM (.ged) fájl kiválasztása és betöltése"
+            className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+          >
+            <FileUp className="h-4 w-4 text-emerald-700" />
+            GEDCOM fájl megnyitása (.ged)
+            <input
+              type="file"
+              accept=".ged,.gedcom"
+              disabled={busy}
+              onChange={handleGedcomSelect}
               className="hidden"
             />
           </label>
@@ -271,7 +386,7 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
             disabled={busy}
             onClick={() => {
               if (meta.person_count > 0) {
-                setConfirmAction('seed');
+                setConfirmAction({ kind: 'seed' });
               } else {
                 void runDirectReset('seed');
               }
@@ -287,7 +402,7 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
             disabled={busy}
             onClick={() => {
               if (meta.person_count > 0) {
-                setConfirmAction('new');
+                setConfirmAction({ kind: 'new' });
               } else {
                 void runDirectReset('new');
               }
@@ -305,11 +420,17 @@ export function PackagePanel({ meta, onRefresh, onError }: PackagePanelProps) {
           busy={busy}
           destructive={false}
           title={
-            confirmAction === 'seed'
+            confirmAction.kind === 'seed'
               ? 'Minta családfa betöltése'
-              : 'Új üres családfa kezdése'
+              : confirmAction.kind === 'new'
+                ? 'Új üres családfa kezdése'
+                : 'GEDCOM (.ged) fájl betöltése'
           }
-          description="A jelenleg megnyitott családfa adatai lecserélődnek. Ha meg szeretnéd őrizni a mostani munkádat, előtte mentsd el .ftree fájlba."
+          description={
+            confirmAction.kind === 'import_gedcom'
+              ? `A kiválasztott fájl (${confirmAction.file.name}) betöltésével a jelenlegi családfa tartalma lecserélődik. Ha szeretnéd megőrizni a mostani képeket és adatokat, előtte mentsd el .ftree fájlba (a Visszavonás gombbal is visszaléphetsz).`
+              : 'A jelenleg megnyitott családfa adatai lecserélődnek. Ha meg szeretnéd őrizni a mostani munkádat, előtte mentsd el .ftree fájlba.'
+          }
           confirmLabel="Igen, folytatom"
           cancelLabel="Mégse"
           onCancel={() => setConfirmAction(null)}

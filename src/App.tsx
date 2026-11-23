@@ -426,6 +426,7 @@ export default function App() {
               <aside className="fixed inset-y-0 right-0 z-30 w-full max-w-md border-l border-slate-200 bg-white shadow-2xl lg:static lg:z-auto lg:h-[calc(100vh-124px)] lg:w-[410px] lg:shrink-0 lg:overflow-hidden lg:rounded-xl lg:border lg:shadow-sm">
                 <PersonEditorDrawer
                   bundle={bundle}
+                  availableSources={snapshot.sources ?? []}
                   showCloseButton
                   onClose={() => {
                     setEditorOpen(false);
@@ -573,6 +574,7 @@ export default function App() {
               {bundle ? (
                 <PersonEditorDrawer
                   bundle={bundle}
+                  availableSources={snapshot.sources ?? []}
                   onFocusOnTree={(id) => requestSelectPerson(id, false, true)}
                   onSelectPerson={(id) => void performSelectPerson(id, false, false)}
                   onOpenQuickAdd={(mode) => setQuickAdd(mode)}

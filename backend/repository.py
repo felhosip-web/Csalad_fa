@@ -6,7 +6,14 @@ import sqlite3
 import uuid
 from typing import Any
 
-from .models import NotFoundError, ParentChild, Person, UnionRecord
+from .models import (
+    NotFoundError,
+    ParentChild,
+    Person,
+    PersonSourceLink,
+    SourceRecord,
+    UnionRecord,
+)
 from .validators import utc_now_iso
 
 
@@ -46,6 +53,27 @@ def _row_to_parent_child(row: sqlite3.Row) -> ParentChild:
         parent_id=str(row["parent_id"]),
         union_id=str(row["union_id"]) if row["union_id"] is not None else None,
         relation_type=str(row["relation_type"]),
+        created_at=str(row["created_at"]),
+    )
+
+
+def _row_to_source(row: sqlite3.Row) -> SourceRecord:
+    return SourceRecord(
+        id=str(row["id"]),
+        source_type=str(row["source_type"]),
+        title=str(row["title"]),
+        reference=str(row["reference"]),
+        notes=str(row["notes"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _row_to_person_source(row: sqlite3.Row) -> PersonSourceLink:
+    return PersonSourceLink(
+        person_id=str(row["person_id"]),
+        source_id=str(row["source_id"]),
+        citation_note=str(row["citation_note"]),
         created_at=str(row["created_at"]),
     )
 
@@ -345,3 +373,163 @@ class FamilyRepository:
             (child_id, parent_id),
         )
         self.conn.commit()
+
+    # --- Sources & Citations ---
+    def list_sources(self, search: str = "") -> list[SourceRecord]:
+        query = search.strip()
+        if query:
+            like = f"%{query}%"
+            rows = self.conn.execute(
+                """
+                SELECT * FROM sources
+                WHERE title LIKE ? COLLATE NOCASE
+                   OR reference LIKE ? COLLATE NOCASE
+                ORDER BY title COLLATE NOCASE ASC;
+                """,
+                (like, like),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM sources ORDER BY created_at ASC, title COLLATE NOCASE ASC;"
+            ).fetchall()
+        return [_row_to_source(r) for r in rows]
+
+    def get_source(self, source_id: str) -> SourceRecord:
+        row = self.conn.execute("SELECT * FROM sources WHERE id = ?;", (source_id,)).fetchone()
+        if row is None:
+            raise NotFoundError("A keresett forrás nem található.")
+        return _row_to_source(row)
+
+    def create_source(
+        self,
+        *,
+        source_type: str = "document",
+        title: str,
+        reference: str = "",
+        notes: str = "",
+        source_id: str | None = None,
+    ) -> SourceRecord:
+        sid = source_id or uuid.uuid4().hex
+        now = utc_now_iso()
+        self.conn.execute(
+            """
+            INSERT INTO sources (id, source_type, title, reference, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (sid, source_type, title, reference, notes, now, now),
+        )
+        self.conn.commit()
+        return self.get_source(sid)
+
+    def update_source(self, source_id: str, fields: dict[str, Any]) -> SourceRecord:
+        existing = self.get_source(source_id)
+        now = utc_now_iso()
+        self.conn.execute(
+            """
+            UPDATE sources
+            SET source_type = ?,
+                title = ?,
+                reference = ?,
+                notes = ?,
+                updated_at = ?
+            WHERE id = ?;
+            """,
+            (
+                fields.get("source_type", existing.source_type),
+                fields.get("title", existing.title),
+                fields.get("reference", existing.reference),
+                fields.get("notes", existing.notes),
+                now,
+                source_id,
+            ),
+        )
+        self.conn.commit()
+        return self.get_source(source_id)
+
+    def delete_source(self, source_id: str) -> SourceRecord:
+        source = self.get_source(source_id)
+        self.conn.execute("DELETE FROM sources WHERE id = ?;", (source_id,))
+        self.conn.commit()
+        return source
+
+    def list_person_sources(self) -> list[PersonSourceLink]:
+        rows = self.conn.execute(
+            "SELECT * FROM person_sources ORDER BY created_at ASC;"
+        ).fetchall()
+        return [_row_to_person_source(r) for r in rows]
+
+    def get_sources_for_person(self, person_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                ps.person_id,
+                ps.source_id,
+                ps.citation_note,
+                ps.created_at AS linked_at,
+                s.id,
+                s.source_type,
+                s.title,
+                s.reference,
+                s.notes,
+                s.created_at,
+                s.updated_at
+            FROM person_sources ps
+            JOIN sources s ON s.id = ps.source_id
+            WHERE ps.person_id = ?
+            ORDER BY ps.created_at ASC, s.title COLLATE NOCASE ASC;
+            """,
+            (person_id,),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            src = _row_to_source(r)
+            result.append(
+                {
+                    "person_id": str(r["person_id"]),
+                    "source_id": str(r["source_id"]),
+                    "citation_note": str(r["citation_note"]),
+                    "created_at": str(r["linked_at"]),
+                    "source": src.to_dict(),
+                }
+            )
+        return result
+
+    def link_person_source(
+        self,
+        *,
+        person_id: str,
+        source_id: str,
+        citation_note: str = "",
+    ) -> PersonSourceLink:
+        now = utc_now_iso()
+        self.conn.execute(
+            """
+            INSERT INTO person_sources (person_id, source_id, citation_note, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(person_id, source_id) DO UPDATE SET
+                citation_note = excluded.citation_note;
+            """,
+            (person_id, source_id, citation_note, now),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT * FROM person_sources WHERE person_id = ? AND source_id = ?;",
+            (person_id, source_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("A forráshivatkozás mentése nem sikerült.")
+        return _row_to_person_source(row)
+
+    def unlink_person_source(self, person_id: str, source_id: str) -> None:
+        row = self.conn.execute(
+            "SELECT 1 FROM person_sources WHERE person_id = ? AND source_id = ?;",
+            (person_id, source_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("A személyhez tartozó forráshivatkozás nem található.")
+        self.conn.execute(
+            "DELETE FROM person_sources WHERE person_id = ? AND source_id = ?;",
+            (person_id, source_id),
+        )
+        self.conn.commit()
+

@@ -123,6 +123,31 @@ class ParentChild:
 
 
 @dataclass(slots=True)
+class SourceRecord:
+    id: str
+    source_type: str
+    title: str
+    reference: str
+    notes: str
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PersonSourceLink:
+    person_id: str
+    source_id: str
+    citation_note: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class TreeMeta:
     format: str
     format_version: int

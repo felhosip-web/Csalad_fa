@@ -10,6 +10,7 @@ import tempfile
 from typing import Any
 
 from .db import connect_sqlite
+from .gedcom import export_gedcom_text, parse_gedcom_bytes
 from .media import (
     _atomic_write_bytes,
     cleanup_unused_avatars,
@@ -17,7 +18,7 @@ from .media import (
     resolve_media_path,
     save_portrait_image,
 )
-from .models import ConflictError, ParentChild, Person, UnionRecord, ValidationError
+from .models import ConflictError, NotFoundError, PackageError, ParentChild, Person, UnionRecord, ValidationError
 from .package import (
     export_ftree_package,
     import_ftree_package_checked,
@@ -35,6 +36,7 @@ from .validators import (
     validate_gender,
     validate_relation_type,
     validate_required_name,
+    validate_source_type,
     validate_union_status,
 )
 
@@ -139,6 +141,7 @@ class FamilyTreeService:
             persons = repo.list_persons(search=search)
             unions = repo.list_unions()
             relations = repo.list_parent_child()
+            sources = repo.list_sources()
             meta = read_workspace_meta(self.workspace_dir)
             meta.tree_name = repo.get_tree_name()
             meta.person_count = len(repo.list_persons()) if search else len(persons)
@@ -149,6 +152,7 @@ class FamilyTreeService:
                 "persons": [p.to_dict() for p in persons],
                 "unions": [u.to_dict() for u in unions],
                 "parent_child": [r.to_dict() for r in relations],
+                "sources": [s.to_dict() for s in sources],
                 "undo": {
                     "can_undo": len(self._undo_stack) > 0,
                     "last_label": self._undo_stack[-1].label if self._undo_stack else "",
@@ -373,12 +377,15 @@ class FamilyTreeService:
                     }
                 )
 
+            sources = repo.get_sources_for_person(person_id)
+
             return {
                 "person": person.to_dict(),
                 "parents": parents,
                 "unions": union_entries,
                 "children": children,
                 "siblings": siblings,
+                "sources": sources,
             }
         finally:
             conn.close()
@@ -631,7 +638,142 @@ class FamilyTreeService:
         finally:
             conn.close()
 
-    # --- Packaging (.ftree) ---
+    # --- Sources & Citations ---
+    def list_sources(self, search: str = "") -> list[dict[str, Any]]:
+        conn, repo = self._repo()
+        try:
+            return [s.to_dict() for s in repo.list_sources(search=search)]
+        finally:
+            conn.close()
+
+    def create_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        title = validate_required_name(payload.get("title"), "Forrás címe")
+        source_type = validate_source_type(payload.get("source_type"))
+        reference = normalize_text(
+            payload.get("reference"), max_length=500, field_label="Forráshely / hivatkozás"
+        )
+        notes = normalize_text(
+            payload.get("notes"), max_length=5000, field_label="Forrás megjegyzése"
+        )
+        self._push_undo(f"Forrás felvétele: {title}")
+        conn, repo = self._repo()
+        try:
+            source = repo.create_source(
+                source_type=source_type,
+                title=title,
+                reference=reference,
+                notes=notes,
+            )
+            return source.to_dict()
+        finally:
+            conn.close()
+
+    def update_source(self, source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        conn, repo = self._repo()
+        try:
+            existing = repo.get_source(source_id)
+            fields: dict[str, Any] = {}
+            if "title" in payload:
+                fields["title"] = validate_required_name(payload.get("title"), "Forrás címe")
+            if "source_type" in payload:
+                fields["source_type"] = validate_source_type(payload.get("source_type"))
+            if "reference" in payload:
+                fields["reference"] = normalize_text(
+                    payload.get("reference"),
+                    max_length=500,
+                    field_label="Forráshely / hivatkozás",
+                )
+            if "notes" in payload:
+                fields["notes"] = normalize_text(
+                    payload.get("notes"),
+                    max_length=5000,
+                    field_label="Forrás megjegyzése",
+                )
+            self._push_undo(f"Forrás módosítása: {existing.title}")
+            updated = repo.update_source(source_id, fields)
+            return updated.to_dict()
+        finally:
+            conn.close()
+
+    def delete_source(self, source_id: str) -> dict[str, Any]:
+        conn, repo = self._repo()
+        try:
+            existing = repo.get_source(source_id)
+            self._push_undo(f"Forrás törlése: {existing.title}")
+            deleted = repo.delete_source(source_id)
+            return {"deleted": deleted.to_dict()}
+        finally:
+            conn.close()
+
+    def add_source_to_person(self, person_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_source_id = payload.get("source_id")
+        existing_source_id = normalize_text(raw_source_id) if raw_source_id else ""
+        citation_note = normalize_text(
+            payload.get("citation_note"),
+            max_length=500,
+            field_label="Részlet / oldalszám",
+        )
+
+        conn, repo = self._repo()
+        try:
+            person = repo.get_person(person_id)
+            if existing_source_id:
+                source = repo.get_source(existing_source_id)
+                self._push_undo(f"Forrás hozzárendelése: {person.full_name}")
+            else:
+                title = validate_required_name(payload.get("title"), "Forrás címe")
+                source_type = validate_source_type(payload.get("source_type"))
+                reference = normalize_text(
+                    payload.get("reference"),
+                    max_length=500,
+                    field_label="Forráshely / hivatkozás",
+                )
+                notes = normalize_text(
+                    payload.get("notes"),
+                    max_length=5000,
+                    field_label="Forrás megjegyzése",
+                )
+                self._push_undo(f"Forrás rögzítése: {title}")
+                source = repo.create_source(
+                    source_type=source_type,
+                    title=title,
+                    reference=reference,
+                    notes=notes,
+                )
+
+            link = repo.link_person_source(
+                person_id=person_id,
+                source_id=source.id,
+                citation_note=citation_note,
+            )
+            return {
+                "source": source.to_dict(),
+                "link": link.to_dict(),
+                "sources": repo.get_sources_for_person(person_id),
+            }
+        finally:
+            conn.close()
+
+    def remove_source_from_person(self, person_id: str, source_id: str) -> dict[str, Any]:
+        conn, repo = self._repo()
+        try:
+            person = repo.get_person(person_id)
+            exists = conn.execute(
+                "SELECT 1 FROM person_sources WHERE person_id = ? AND source_id = ?;",
+                (person_id, source_id),
+            ).fetchone()
+            if exists is None:
+                raise NotFoundError("A személyhez tartozó forráshivatkozás nem található.")
+            self._push_undo(f"Forrás eltávolítása: {person.full_name}")
+            repo.unlink_person_source(person_id, source_id)
+            return {
+                "removed": {"person_id": person_id, "source_id": source_id},
+                "sources": repo.get_sources_for_person(person_id),
+            }
+        finally:
+            conn.close()
+
+    # --- Packaging (.ftree) & GEDCOM (.ged) ---
     def export_package(self, output_path: str | Path) -> Path:
         return export_ftree_package(self.workspace_dir, Path(output_path))
 
@@ -642,6 +784,134 @@ class FamilyTreeService:
             "meta": meta.to_dict(),
             "tree": self.get_tree_snapshot(),
             "warning": warning,
+        }
+
+    def export_gedcom(self) -> str:
+        conn, repo = self._repo()
+        try:
+            return export_gedcom_text(
+                tree_name=repo.get_tree_name(),
+                persons=repo.list_persons(),
+                unions=repo.list_unions(),
+                relations=repo.list_parent_child(),
+                sources=repo.list_sources(),
+                person_sources=repo.list_person_sources(),
+            )
+        finally:
+            conn.close()
+
+    def import_gedcom(
+        self, raw_bytes: bytes, *, tree_name: str | None = None
+    ) -> dict[str, Any]:
+        parsed = parse_gedcom_bytes(raw_bytes, override_tree_name=tree_name)
+
+        with tempfile.TemporaryDirectory(prefix="ftree_ged_") as tmp_dir:
+            tmp_ws = Path(tmp_dir) / "ws"
+            tmp_db = initialize_workspace(tmp_ws, tree_name=parsed.tree_name)
+            tmp_conn = connect_sqlite(tmp_db)
+            try:
+                tmp_repo = FamilyRepository(tmp_conn)
+                for p in parsed.persons:
+                    tmp_repo.create_person(
+                        person_id=p["id"],
+                        full_name=p["full_name"],
+                        birth_name=p["birth_name"],
+                        gender=p["gender"],
+                        birth_date=p["birth_date"],
+                        death_date=p["death_date"],
+                        is_living=bool(p["is_living"]),
+                        notes=p["notes"],
+                    )
+                for s in parsed.sources:
+                    tmp_repo.create_source(
+                        source_id=s["id"],
+                        source_type=s["source_type"],
+                        title=s["title"],
+                        reference=s["reference"],
+                        notes=s["notes"],
+                    )
+                for u in parsed.unions:
+                    tmp_repo.create_union(
+                        union_id=u["id"],
+                        partner1_id=u["partner1_id"],
+                        partner2_id=u["partner2_id"],
+                        status=u["status"],
+                        start_date=u["start_date"],
+                        end_date=u["end_date"],
+                        notes=u["notes"],
+                    )
+                for r in parsed.relations:
+                    try:
+                        self._ensure_no_cycle(
+                            tmp_repo,
+                            parent_id=r["parent_id"],
+                            child_id=r["child_id"],
+                        )
+                    except ConflictError as exc:
+                        raise PackageError(
+                            "A GEDCOM fájl körkörös szülő–gyermek hivatkozást tartalmaz.",
+                            code="INVALID_GEDCOM_CYCLE",
+                            hint="Ellenőrizd a forrásfájlban a családi kapcsolatokat, mert egy személy nem lehet saját őse.",
+                        ) from exc
+                    tmp_repo.upsert_parent_child(
+                        child_id=r["child_id"],
+                        parent_id=r["parent_id"],
+                        union_id=r["union_id"],
+                        relation_type=r["relation_type"],
+                    )
+                for ps in parsed.person_sources:
+                    tmp_repo.link_person_source(
+                        person_id=ps["person_id"],
+                        source_id=ps["source_id"],
+                        citation_note=ps["citation_note"],
+                    )
+            finally:
+                tmp_conn.close()
+
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(f"{tmp_db}{suffix}")
+                if sidecar.is_file():
+                    sidecar.unlink()
+            staged_db_bytes = tmp_db.read_bytes()
+
+        conn, repo = self._repo()
+        try:
+            existing_media = [p.avatar_path for p in repo.list_persons() if p.avatar_path]
+        finally:
+            conn.close()
+
+        self._push_undo("GEDCOM importálás", media_paths=existing_media)
+
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{self.db_path}{suffix}")
+            if sidecar.is_file():
+                sidecar.unlink()
+        _atomic_write_bytes(self.db_path, staged_db_bytes)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{self.db_path}{suffix}")
+            if sidecar.is_file():
+                sidecar.unlink()
+
+        cleanup_unused_avatars(self.workspace_dir, set())
+
+        meta = read_workspace_meta(self.workspace_dir)
+        meta.tree_name = parsed.tree_name
+        meta.person_count = len(parsed.persons)
+        meta.union_count = len(parsed.unions)
+        meta.relation_count = len(parsed.relations)
+        meta.updated_at = utc_now_iso()
+        write_workspace_meta(self.workspace_dir, meta)
+
+        snapshot = self.get_tree_snapshot()
+        return {
+            "meta": snapshot["meta"],
+            "tree": snapshot,
+            "imported": {
+                "person_count": len(parsed.persons),
+                "union_count": len(parsed.unions),
+                "relation_count": len(parsed.relations),
+                "source_count": len(parsed.sources),
+            },
         }
 
     # --- Demo Sample Family (useful for testing multiple marriages & half-siblings) ---

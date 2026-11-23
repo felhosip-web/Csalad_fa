@@ -74,12 +74,44 @@ export interface AppErrorInfo {
   onRetry?: () => void | Promise<void>;
 }
 
+export type SourceType = 'registry' | 'photo' | 'oral_history' | 'document' | 'other';
+
+export interface SourceRecord {
+  id: string;
+  source_type: SourceType;
+  title: string;
+  reference: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonSourceItem {
+  person_id: string;
+  source_id: string;
+  citation_note: string;
+  created_at: string;
+  source: SourceRecord;
+}
+
 export interface TreeSnapshot {
   meta: TreeMeta;
   persons: Person[];
   unions: UnionRecord[];
   parent_child: ParentChild[];
+  sources?: SourceRecord[];
   undo?: UndoState;
+}
+
+export interface GedcomImportResponse {
+  meta: TreeMeta;
+  tree: TreeSnapshot;
+  imported: {
+    person_count: number;
+    union_count: number;
+    relation_count: number;
+    source_count: number;
+  };
 }
 
 export interface PersonBundle {
@@ -97,6 +129,7 @@ export interface PersonBundle {
     shared_parent_ids: string[];
     sibling_type: 'full' | 'half';
   }>;
+  sources?: PersonSourceItem[];
 }
 
 export interface HealthResponse {
@@ -144,4 +177,20 @@ export const RELATION_TYPE_LABELS: Record<RelationType, string> = {
   step: 'Mostoha',
   foster: 'Nevelő',
   guardian: 'Gyám',
+};
+
+export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
+  registry: 'Anyakönyv',
+  photo: 'Fénykép',
+  oral_history: 'Családi elbeszélés',
+  document: 'Dokumentum',
+  other: 'Egyéb',
+};
+
+export const SOURCE_TYPE_TOOLTIPS: Record<SourceType, string> = {
+  registry: 'Állami vagy egyházi anyakönyvi kivonat, keresztelési, házassági vagy halotti bejegyzés',
+  photo: 'Régi családi fénykép, portré, hátoldali felirat vagy albumbejegyzés',
+  oral_history: 'Nagyszülőktől, rokonoktól hallott családi történet, interjú vagy hangfelvétel',
+  document: 'Személyi irat, bizonyítvány, katonakönyv, levél, birtoklevél vagy újságcikk',
+  other: 'Minden más olyan forrás, amely alátámasztja a személy adatait',
 };

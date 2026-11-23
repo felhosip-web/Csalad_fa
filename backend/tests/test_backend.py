@@ -348,6 +348,211 @@ class SchemaAndServiceTests(unittest.TestCase):
             self.service.undo_last_action()
         self.assertIn("Nincs visszavonható", empty_undo.exception.message)
 
+    def test_sources_crud_ftree_persistence_and_v1_migration(self) -> None:
+        p1 = self.service.create_person({"full_name": "Kovács János", "birth_date": "1902"})
+        p2 = self.service.create_person({"full_name": "Kovács Béla", "birth_date": "1930"})
+
+        # Add a new source directly to person
+        added = self.service.add_source_to_person(
+            p1["id"],
+            {
+                "source_type": "registry",
+                "title": "Szegedi Római Katolikus Anyakönyv",
+                "reference": "1902 / 48. folyószám",
+                "notes": "Keresztelési bejegyzés jó állapotban.",
+                "citation_note": "48. lap, 2. sor",
+            },
+        )
+        src_id = added["source"]["id"]
+        self.assertEqual(len(added["sources"]), 1)
+        self.assertEqual(added["sources"][0]["source"]["source_type"], "registry")
+        self.assertEqual(added["sources"][0]["citation_note"], "48. lap, 2. sor")
+
+        # Link the same existing source to second person with a different citation_note
+        linked_p2 = self.service.add_source_to_person(
+            p2["id"],
+            {"source_id": src_id, "citation_note": "1930 / 12. bejegyzés"},
+        )
+        self.assertEqual(len(linked_p2["sources"]), 1)
+        self.assertEqual(linked_p2["sources"][0]["source"]["id"], src_id)
+
+        # Snapshot and person bundle expose sources
+        snap = self.service.get_tree_snapshot()
+        self.assertEqual(len(snap["sources"]), 1)
+        bundle = self.service.get_person_bundle(p1["id"])
+        self.assertEqual(len(bundle["sources"]), 1)
+
+        # Invalid source type is rejected with clear Hungarian message
+        with self.assertRaises(ValidationError) as bad_type:
+            self.service.add_source_to_person(
+                p1["id"],
+                {"source_type": "invalid_type", "title": "Hibás típus"},
+            )
+        self.assertIn("forrástípus", bad_type.exception.message.lower())
+
+        # Export to .ftree and re-import into fresh workspace preserves sources & links
+        archive = Path(self.tmp.name) / "with_sources.ftree"
+        self.service.export_package(archive)
+        ws_imported = Path(self.tmp.name) / "ws_sources"
+        svc_imported = FamilyTreeService(ws_imported)
+        svc_imported.import_package(archive)
+        imported_bundle = svc_imported.get_person_bundle(p1["id"])
+        self.assertEqual(len(imported_bundle["sources"]), 1)
+        self.assertEqual(imported_bundle["sources"][0]["source"]["title"], "Szegedi Római Katolikus Anyakönyv")
+
+        # Unlink & undo restores link
+        self.service.remove_source_from_person(p1["id"], src_id)
+        self.assertEqual(len(self.service.get_person_bundle(p1["id"])["sources"]), 0)
+        self.service.undo_last_action()
+        self.assertEqual(len(self.service.get_person_bundle(p1["id"])["sources"]), 1)
+
+        # Deleting source removes link cleanly
+        self.service.delete_source(src_id)
+        self.assertEqual(len(self.service.get_tree_snapshot()["sources"]), 0)
+        self.assertEqual(len(self.service.get_person_bundle(p2["id"])["sources"]), 0)
+
+        # Test v1 -> v2 schema migration on an imported legacy SQLite database
+        v1_db = Path(self.tmp.name) / "v1.db"
+        v1_conn = sqlite3.connect(str(v1_db))
+        v1_conn.executescript(
+            """
+            CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);
+            INSERT INTO schema_migrations VALUES (1, 'initial_schema', '2026-01-01T00:00:00Z');
+            CREATE TABLE tree_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+            INSERT INTO tree_settings VALUES ('tree_name', 'Régi v1 fa', '2026-01-01T00:00:00Z');
+            CREATE TABLE persons (
+                id TEXT PRIMARY KEY, full_name TEXT NOT NULL, birth_name TEXT NOT NULL DEFAULT '',
+                gender TEXT NOT NULL DEFAULT 'unknown', birth_date TEXT NOT NULL DEFAULT '',
+                death_date TEXT NOT NULL DEFAULT '', is_living INTEGER NOT NULL DEFAULT 1,
+                avatar_path TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO persons VALUES ('p_v1', 'Régi Sándor', '', 'male', '1910', '', 0, '', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+            CREATE TABLE unions (
+                id TEXT PRIMARY KEY, partner1_id TEXT NOT NULL, partner2_id TEXT,
+                status TEXT NOT NULL DEFAULT 'married', start_date TEXT NOT NULL DEFAULT '',
+                end_date TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE parent_child (
+                child_id TEXT NOT NULL, parent_id TEXT NOT NULL, union_id TEXT,
+                relation_type TEXT NOT NULL DEFAULT 'biological', created_at TEXT NOT NULL,
+                PRIMARY KEY (child_id, parent_id)
+            );
+            """
+        )
+        v1_conn.commit()
+        v1_conn.close()
+
+        v1_archive = Path(self.tmp.name) / "v1_legacy.ftree"
+        v1_meta = {
+            "format": "ftree",
+            "format_version": 1,
+            "schema_version": 1,
+            "tree_name": "Régi v1 fa",
+            "app_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "person_count": 1,
+            "union_count": 0,
+            "relation_count": 0,
+        }
+        with zipfile.ZipFile(v1_archive, "w") as zf:
+            zf.writestr("meta.json", json.dumps(v1_meta, ensure_ascii=False))
+            zf.write(v1_db, arcname="family.db")
+
+        ws_v1 = Path(self.tmp.name) / "ws_v1_migrated"
+        svc_v1 = FamilyTreeService(ws_v1)
+        mig_res = svc_v1.import_package(v1_archive)
+        self.assertEqual(mig_res["tree"]["persons"][0]["full_name"], "Régi Sándor")
+        # Adding a source after importing v1 archive works immediately on migrated schema
+        svc_v1.add_source_to_person("p_v1", {"source_type": "photo", "title": "Családi portré"})
+        self.assertEqual(len(svc_v1.get_person_bundle("p_v1")["sources"]), 1)
+
+    def test_gedcom_roundtrip_and_invalid_handling(self) -> None:
+        self.service.seed_sample_family()
+        persons_by_name = {p["full_name"]: p for p in self.service.get_tree_snapshot()["persons"]}
+        peter = persons_by_name["Kovács Péter"]
+        kata = persons_by_name["Kovács Kata"]
+
+        self.service.add_source_to_person(
+            peter["id"],
+            {
+                "source_type": "oral_history",
+                "title": "Nagymama visszaemlékezése",
+                "reference": "2020-as családi hangfelvétel",
+                "notes": "Szegedi műhely története.",
+                "citation_note": "12:30-tól",
+            },
+        )
+        # Mark one child relation as adoptive to check PEDI / _PEDI round-trip
+        self.service.add_parent_child(
+            {
+                "child_id": kata["id"],
+                "parent_id": peter["id"],
+                "union_id": self.service.get_person_bundle(peter["id"])["unions"][0]["id"],
+                "relation_type": "adoptive",
+            }
+        )
+
+        ged_text = self.service.export_gedcom()
+        self.assertIn("0 HEAD", ged_text)
+        self.assertIn("1 CHAR UTF-8", ged_text)
+        self.assertIn("Kovács–Nagy családfa", ged_text)
+        self.assertIn("Nagymama visszaemlékezése", ged_text)
+        self.assertIn("2 PEDI adopted", ged_text)
+
+        # Invalid/empty GEDCOM must raise PackageError and keep target workspace untouched
+        ws_other = Path(self.tmp.name) / "ws_ged"
+        other_svc = FamilyTreeService(ws_other)
+        other_svc.create_person({"full_name": "Meglévő Tag"})
+
+        with self.assertRaises(PackageError) as empty_ctx:
+            other_svc.import_gedcom(b"   ")
+        self.assertEqual(empty_ctx.exception.code, "EMPTY_GEDCOM")
+
+        with self.assertRaises(PackageError) as no_indi_ctx:
+            other_svc.import_gedcom(b"0 HEAD\n1 CHAR UTF-8\n0 TRLR\n")
+        self.assertEqual(no_indi_ctx.exception.code, "EMPTY_GEDCOM_RECORDS")
+
+        # Same person HUSB + CHIL skips self-parent; test genuine 2-node cycle A->B->A
+        two_node_cycle = (
+            "0 HEAD\n1 CHAR UTF-8\n"
+            "0 @I1@ INDI\n1 NAME /Teszt/ Egy\n"
+            "0 @I2@ INDI\n1 NAME /Teszt/ Kettő\n"
+            "0 @F1@ FAM\n1 HUSB @I1@\n1 CHIL @I2@\n"
+            "0 @F2@ FAM\n1 HUSB @I2@\n1 CHIL @I1@\n"
+            "0 TRLR\n"
+        ).encode("utf-8")
+        with self.assertRaises(PackageError) as cycle_ctx:
+            other_svc.import_gedcom(two_node_cycle)
+        self.assertEqual(cycle_ctx.exception.code, "INVALID_GEDCOM_CYCLE")
+
+        # Existing workspace remained untouched across all failures
+        self.assertEqual(other_svc.get_tree_snapshot()["persons"][0]["full_name"], "Meglévő Tag")
+
+        # Valid GEDCOM import succeeds and supports undo back to previous tree
+        imp_res = other_svc.import_gedcom(ged_text.encode("utf-8"))
+        self.assertEqual(imp_res["imported"]["person_count"], 7)
+        self.assertEqual(imp_res["imported"]["union_count"], 3)
+        self.assertEqual(imp_res["imported"]["source_count"], 1)
+        self.assertEqual(imp_res["meta"]["tree_name"], "Kovács–Nagy családfa")
+
+        imp_by_name = {p["full_name"]: p for p in imp_res["tree"]["persons"]}
+        imp_peter = other_svc.get_person_bundle(imp_by_name["Kovács Péter"]["id"])
+        self.assertEqual(len(imp_peter["sources"]), 1)
+        self.assertEqual(imp_peter["sources"][0]["source"]["source_type"], "oral_history")
+        self.assertEqual(imp_peter["sources"][0]["citation_note"], "12:30-tól")
+
+        imp_kata = other_svc.get_person_bundle(imp_by_name["Kovács Kata"]["id"])
+        adoptive_links = [l for l in imp_kata["parents"] if l["relation_type"] == "adoptive"]
+        self.assertGreaterEqual(len(adoptive_links), 1)
+
+        # Undo restores "Meglévő Tag"
+        undone = other_svc.undo_last_action()
+        self.assertEqual(undone["tree"]["meta"]["person_count"], 1)
+        self.assertEqual(undone["tree"]["persons"][0]["full_name"], "Meglévő Tag")
+
 
 class HTTPServerIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -480,6 +685,52 @@ class HTTPServerIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(undo_res["tree"]["meta"]["person_count"], 2)
         self.assertIn("Visszavonva:", undo_res["message"])
+
+        # Sources REST API endpoints
+        status, add_src = self._req(
+            "POST",
+            f"/api/persons/{pid}/sources",
+            {
+                "source_type": "document",
+                "title": "Katonai igazolvány",
+                "reference": "1974 / Budapest",
+                "citation_note": "3. oldal",
+            },
+        )
+        self.assertEqual(status, 201)
+        sid = add_src["source"]["id"]
+        self.assertEqual(len(add_src["sources"]), 1)
+
+        status, list_src = self._req("GET", "/api/sources")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(list_src["sources"]), 1)
+
+        # GEDCOM export & import via HTTP
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/gedcom/export") as ged_resp:
+            self.assertEqual(ged_resp.status, 200)
+            ged_bytes = ged_resp.read()
+        ged_text = ged_bytes.decode("utf-8")
+        self.assertIn("Katonai igazolvány", ged_text)
+        self.assertIn("/Minta/ János", ged_text)
+
+        status, ged_bad = self._post_raw("/api/gedcom/import", b"")
+        self.assertEqual(status, 400)
+        self.assertEqual(ged_bad["error"]["code"], "EMPTY_GEDCOM")
+
+        status, ged_ok = self._post_raw("/api/gedcom/import", ged_bytes, content_type="text/plain")
+        self.assertEqual(status, 200)
+        self.assertEqual(ged_ok["imported"]["person_count"], 2)
+        self.assertEqual(ged_ok["imported"]["source_count"], 1)
+        self.assertEqual(ged_ok["tree"]["persons"][0]["full_name"], "Minta János")
+
+        # Unlink source via DELETE on newly imported tree person
+        imp_pid = ged_ok["tree"]["persons"][0]["id"]
+        imp_bundle_status, imp_bundle = self._req("GET", f"/api/persons/{imp_pid}")
+        self.assertEqual(imp_bundle_status, 200)
+        imp_sid = imp_bundle["sources"][0]["source_id"]
+        del_status, del_res = self._req("DELETE", f"/api/persons/{imp_pid}/sources/{imp_sid}")
+        self.assertEqual(del_status, 200)
+        self.assertEqual(del_res["sources"], [])
 
     def test_static_spa_serving_and_traversal_protection(self) -> None:
         static_root = Path(self.tmp.name) / "static_dist"

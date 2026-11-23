@@ -10,7 +10,7 @@ from typing import Callable
 
 from .validators import utc_now_iso
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def _resolve_schema_sql_path() -> Path:
@@ -40,10 +40,48 @@ def _apply_initial_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(sql_script)
 
 
+def _apply_sources_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sources (
+            id TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL DEFAULT 'document'
+                CHECK (source_type IN ('registry', 'photo', 'oral_history', 'document', 'other')),
+            title TEXT NOT NULL CHECK (length(trim(title)) > 0),
+            reference TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS person_sources (
+            person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+            source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+            citation_note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (person_id, source_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sources_type
+            ON sources(source_type);
+
+        CREATE INDEX IF NOT EXISTS idx_sources_title
+            ON sources(title COLLATE NOCASE);
+
+        CREATE INDEX IF NOT EXISTS idx_person_sources_person
+            ON person_sources(person_id);
+
+        CREATE INDEX IF NOT EXISTS idx_person_sources_source
+            ON person_sources(source_id);
+        """
+    )
+
+
 # Ordered list of schema migrations. Future versions append here so older .ftree
 # files migrate seamlessly without breaking existing fields.
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="initial_family_tree_schema", apply=_apply_initial_schema),
+    Migration(version=2, name="sources_and_citations", apply=_apply_sources_schema),
 ]
 
 

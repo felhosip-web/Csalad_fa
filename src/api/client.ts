@@ -1,10 +1,14 @@
 import type {
+  GedcomImportResponse,
   Gender,
   HealthResponse,
   ParentChild,
   Person,
   PersonBundle,
+  PersonSourceItem,
   RelationType,
+  SourceRecord,
+  SourceType,
   TreeMeta,
   TreeSnapshot,
   UnionRecord,
@@ -285,6 +289,42 @@ export const familyApi = {
     );
   },
 
+  listSources(search = ''): Promise<{ sources: SourceRecord[] }> {
+    const qs = search.trim() ? `?search=${encodeURIComponent(search.trim())}` : '';
+    return request<{ sources: SourceRecord[] }>(`/api/sources${qs}`);
+  },
+
+  addPersonSource(
+    personId: string,
+    payload: {
+      source_id?: string;
+      source_type?: SourceType;
+      title?: string;
+      reference?: string;
+      notes?: string;
+      citation_note?: string;
+    },
+  ): Promise<{ source: SourceRecord; sources: PersonSourceItem[] }> {
+    return request<{ source: SourceRecord; sources: PersonSourceItem[] }>(
+      `/api/persons/${encodeURIComponent(personId)}/sources`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+    );
+  },
+
+  removePersonSource(
+    personId: string,
+    sourceId: string,
+  ): Promise<{ removed: { person_id: string; source_id: string }; sources: PersonSourceItem[] }> {
+    return request<{ removed: { person_id: string; source_id: string }; sources: PersonSourceItem[] }>(
+      `/api/persons/${encodeURIComponent(personId)}/sources/${encodeURIComponent(sourceId)}`,
+      { method: 'DELETE' },
+    );
+  },
+
   undo(): Promise<{ undone_label: string; message?: string; tree: TreeSnapshot }> {
     return request<{ undone_label: string; message?: string; tree: TreeSnapshot }>('/api/undo', {
       method: 'POST',
@@ -338,6 +378,41 @@ export const familyApi = {
         'A letöltött .ftree mentési fájl üres.',
         res.status,
         'EMPTY_EXPORT',
+      );
+    }
+    return blob;
+  },
+
+  importGedcom(file: File): Promise<GedcomImportResponse> {
+    const form = new FormData();
+    form.append('file', file);
+    return request<GedcomImportResponse>('/api/gedcom/import', {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  async exportGedcomBlob(): Promise<Blob> {
+    let res: Response;
+    try {
+      res = await fetch('/api/gedcom/export');
+    } catch (err) {
+      throw new ApiError(
+        translateBackendError(err),
+        0,
+        'NETWORK_ERROR',
+        'Ellenőrizd a kapcsolatot, majd próbáld meg újra a GEDCOM exportálást.',
+      );
+    }
+    if (!res.ok) {
+      throw await parseErrorResponse(res);
+    }
+    const blob = await res.blob();
+    if (!blob || blob.size === 0) {
+      throw new ApiError(
+        'Az exportált GEDCOM (.ged) fájl üres.',
+        res.status,
+        'EMPTY_GEDCOM',
       );
     }
     return blob;

@@ -7,9 +7,11 @@ import {
   type FormEvent,
 } from 'react';
 import {
+  BookOpen,
   ChevronDown,
   ChevronRight,
   LocateFixed,
+  Plus,
   Trash2,
   Upload,
   UserPlus,
@@ -20,11 +22,15 @@ import type {
   Gender,
   PersonBundle,
   RelationType,
+  SourceRecord,
+  SourceType,
   UnionStatus,
 } from '../types/family';
 import {
   GENDER_LABELS,
   RELATION_TYPE_LABELS,
+  SOURCE_TYPE_LABELS,
+  SOURCE_TYPE_TOOLTIPS,
   UNION_STATUS_LABELS,
 } from '../types/family';
 import { formatHungarianDate, getInitials } from '../utils/hungarian';
@@ -33,6 +39,7 @@ import type { QuickAddMode } from './QuickAddModal';
 
 interface PersonEditorDrawerProps {
   bundle: PersonBundle;
+  availableSources?: SourceRecord[];
   showCloseButton?: boolean;
   onClose?: () => void;
   onFocusOnTree?: (personId: string) => void;
@@ -55,11 +62,13 @@ type PendingConfirm =
   | { kind: 'delete_union'; unionId: string; partnerLabel: string }
   | { kind: 'delete_parent_link'; parentId: string; parentName: string }
   | { kind: 'delete_child_link'; childId: string; childName: string }
+  | { kind: 'delete_source_link'; sourceId: string; sourceTitle: string }
   | { kind: 'delete_avatar' }
   | { kind: 'discard_changes'; nextAction: 'close' | { selectId: string } };
 
 export function PersonEditorDrawer({
   bundle,
+  availableSources = [],
   showCloseButton = false,
   onClose,
   onFocusOnTree,
@@ -70,6 +79,15 @@ export function PersonEditorDrawer({
   onError,
 }: PersonEditorDrawerProps) {
   const { person, parents, unions, children, siblings } = bundle;
+  const sources = useMemo(() => bundle.sources ?? [], [bundle.sources]);
+
+  const unlinkedSources = useMemo(
+    () =>
+      availableSources.filter(
+        (src) => !sources.some((linked) => linked.source_id === src.id),
+      ),
+    [availableSources, sources],
+  );
 
   const initialValues = useMemo(
     () => ({
@@ -92,10 +110,27 @@ export function PersonEditorDrawer({
   const [isLiving, setIsLiving] = useState(initialValues.isLiving);
   const [notes, setNotes] = useState(initialValues.notes);
   const [showAdvanced, setShowAdvanced] = useState(
-    Boolean(person.notes || unions.length > 0 || parents.length > 0 || children.length > 0),
+    Boolean(
+      person.notes ||
+        unions.length > 0 ||
+        parents.length > 0 ||
+        children.length > 0 ||
+        sources.length > 0,
+    ),
   );
   const [saving, setSaving] = useState(false);
   const [confirmState, setConfirmState] = useState<PendingConfirm | null>(null);
+
+  // Forrás hozzáadása űrlap állapot
+  const [addingSource, setAddingSource] = useState(false);
+  const [sourceMode, setSourceMode] = useState<'new' | 'existing'>('new');
+  const [selectedExistingSourceId, setSelectedExistingSourceId] = useState('');
+  const [sourceType, setSourceType] = useState<SourceType>('registry');
+  const [sourceTitle, setSourceTitle] = useState('');
+  const [sourceReference, setSourceReference] = useState('');
+  const [sourceNotes, setSourceNotes] = useState('');
+  const [citationNote, setCitationNote] = useState('');
+  const [sourceSaving, setSourceSaving] = useState(false);
 
   useEffect(() => {
     setFullName(initialValues.fullName);
@@ -106,6 +141,17 @@ export function PersonEditorDrawer({
     setIsLiving(initialValues.isLiving);
     setNotes(initialValues.notes);
   }, [initialValues]);
+
+  useEffect(() => {
+    setAddingSource(false);
+    setSourceMode('new');
+    setSelectedExistingSourceId('');
+    setSourceType('registry');
+    setSourceTitle('');
+    setSourceReference('');
+    setSourceNotes('');
+    setCitationNote('');
+  }, [person.id]);
 
   const hasUnsavedChanges = useMemo(
     () =>
@@ -290,6 +336,12 @@ export function PersonEditorDrawer({
         await familyApi.deleteRelation(confirmState.childId, person.id);
         setConfirmState(null);
         await onRefresh(person.id, 'A szülő–gyermek kapcsolat bontva.');
+        return;
+      }
+      if (confirmState.kind === 'delete_source_link') {
+        await familyApi.removePersonSource(person.id, confirmState.sourceId);
+        setConfirmState(null);
+        await onRefresh(person.id, 'A forráshivatkozás eltávolítva.');
       }
     } catch (err) {
       setConfirmState(null);
@@ -299,6 +351,55 @@ export function PersonEditorDrawer({
       });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleSaveSource() {
+    if (sourceMode === 'existing') {
+      if (!selectedExistingSourceId) {
+        onError(new Error('Válassz ki egy meglévő forrást a listából.'), {
+          title: 'Hiányzó forrás',
+        });
+        return;
+      }
+    } else if (!sourceTitle.trim()) {
+      onError(new Error('A forrás címének megadása kötelező.'), {
+        title: 'Hiányzó forráscím',
+      });
+      return;
+    }
+
+    setSourceSaving(true);
+    try {
+      await familyApi.addPersonSource(
+        person.id,
+        sourceMode === 'existing'
+          ? {
+              source_id: selectedExistingSourceId,
+              citation_note: citationNote.trim(),
+            }
+          : {
+              source_type: sourceType,
+              title: sourceTitle.trim(),
+              reference: sourceReference.trim(),
+              notes: sourceNotes.trim(),
+              citation_note: citationNote.trim(),
+            },
+      );
+      setAddingSource(false);
+      setSourceTitle('');
+      setSourceReference('');
+      setSourceNotes('');
+      setCitationNote('');
+      setSelectedExistingSourceId('');
+      await onRefresh(person.id, 'A forrás hozzáadva az adatlaphoz.');
+    } catch (err) {
+      onError(err, {
+        title: 'Forrás mentési hiba',
+        fallbackMessage: 'Nem sikerült rögzíteni a forrást.',
+      });
+    } finally {
+      setSourceSaving(false);
     }
   }
 
@@ -874,6 +975,264 @@ export function PersonEditorDrawer({
                     </ul>
                   )}
                 </div>
+
+                {/* Források és bizonyítékok */}
+                <div className="space-y-2.5 border-t border-slate-100 pt-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                      <BookOpen className="h-3.5 w-3.5 text-slate-500" />
+                      Források ({sources.length})
+                    </h4>
+                    <button
+                      type="button"
+                      title="Új vagy meglévő forrás rögzítése ehhez a személyhez"
+                      onClick={() => {
+                        setAddingSource((prev) => !prev);
+                        setSourceMode('new');
+                        if (unlinkedSources.length > 0 && !selectedExistingSourceId) {
+                          setSelectedExistingSourceId(unlinkedSources[0].id);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0"
+                    >
+                      <Plus className="h-3 w-3 text-emerald-700" />
+                      {addingSource ? 'Bezárás' : 'Forrás hozzáadása'}
+                    </button>
+                  </div>
+
+                  {addingSource && (
+                    <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      {unlinkedSources.length > 0 && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => setSourceMode('new')}
+                            title="Teljesen új forrás létrehozása és csatolása"
+                            className={`rounded-md px-2.5 py-1 font-medium whitespace-nowrap ${
+                              sourceMode === 'new'
+                                ? 'bg-slate-900 text-white'
+                                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            Új forrás
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSourceMode('existing');
+                              if (!selectedExistingSourceId && unlinkedSources[0]) {
+                                setSelectedExistingSourceId(unlinkedSources[0].id);
+                              }
+                            }}
+                            title="Már rögzített forrás hozzákapcsolása ebből a családfából"
+                            className={`rounded-md px-2.5 py-1 font-medium whitespace-nowrap ${
+                              sourceMode === 'existing'
+                                ? 'bg-slate-900 text-white'
+                                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            Meglévő forrás ({unlinkedSources.length})
+                          </button>
+                        </div>
+                      )}
+
+                      {sourceMode === 'new' ? (
+                        <div className="space-y-2.5">
+                          <div>
+                            <label
+                              htmlFor="src-type"
+                              className="block text-[11px] font-medium text-slate-700"
+                            >
+                              Forrás típusa
+                            </label>
+                            <select
+                              id="src-type"
+                              title={SOURCE_TYPE_TOOLTIPS[sourceType]}
+                              value={sourceType}
+                              onChange={(e) => setSourceType(e.target.value as SourceType)}
+                              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-700 focus:outline-none"
+                            >
+                              {(Object.keys(SOURCE_TYPE_LABELS) as SourceType[]).map((st) => (
+                                <option key={st} value={st} title={SOURCE_TYPE_TOOLTIPS[st]}>
+                                  {SOURCE_TYPE_LABELS[st]}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label
+                              htmlFor="src-title"
+                              className="block text-[11px] font-medium text-slate-700"
+                            >
+                              Forrás címe *
+                            </label>
+                            <input
+                              id="src-title"
+                              type="text"
+                              title="Add meg a forrás rövid, könnyen felismerhető nevét (pl. Szegedi keresztelési anyakönyv)"
+                              value={sourceTitle}
+                              onChange={(e) => setSourceTitle(e.target.value)}
+                              placeholder="például: Szegedi római katolikus anyakönyv"
+                              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-700 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label
+                              htmlFor="src-ref"
+                              className="block text-[11px] font-medium text-slate-700"
+                            >
+                              Forráshely / hivatkozás
+                            </label>
+                            <input
+                              id="src-ref"
+                              type="text"
+                              title="Add meg a levéltári helyet, évfolyamot, albumot vagy fájlnevet"
+                              value={sourceReference}
+                              onChange={(e) => setSourceReference(e.target.value)}
+                              placeholder="például: 1945 / 112. folyószám vagy családi album"
+                              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-700 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <label
+                            htmlFor="src-existing"
+                            className="block text-[11px] font-medium text-slate-700"
+                          >
+                            Válassz meglévő forrást *
+                          </label>
+                          <select
+                            id="src-existing"
+                            title="Válassz a családfában már rögzített források közül"
+                            value={selectedExistingSourceId}
+                            onChange={(e) => setSelectedExistingSourceId(e.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-700 focus:outline-none"
+                          >
+                            {unlinkedSources.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {SOURCE_TYPE_LABELS[s.source_type]} · {s.title}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div>
+                        <label
+                          htmlFor="src-citation"
+                          className="block text-[11px] font-medium text-slate-700"
+                        >
+                          Pontos hely vagy idézet ehhez a személyhez
+                        </label>
+                        <input
+                          id="src-citation"
+                          type="text"
+                          title="Add meg, pontosan hol szerepel ez a személy a forrásban (például 14. oldal, hátoldali felirat)"
+                          value={citationNote}
+                          onChange={(e) => setCitationNote(e.target.value)}
+                          placeholder="például: 14. oldal, 3. sor vagy hátoldali felirat"
+                          className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-700 focus:outline-none"
+                        />
+                      </div>
+
+                      {sourceMode === 'new' && (
+                        <div>
+                          <label
+                            htmlFor="src-notes"
+                            className="block text-[11px] font-medium text-slate-700"
+                          >
+                            Megjegyzés a forráshoz
+                          </label>
+                          <textarea
+                            id="src-notes"
+                            rows={2}
+                            title="Ide írhatsz további részleteket a forrás tartalmáról vagy állapotáról"
+                            value={sourceNotes}
+                            onChange={(e) => setSourceNotes(e.target.value)}
+                            placeholder="Opcionális leírás, kivonat..."
+                            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-700 focus:outline-none"
+                          />
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAddingSource(false)}
+                          disabled={sourceSaving}
+                          className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                        >
+                          Mégse
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveSource()}
+                          disabled={sourceSaving}
+                          title="Forrás mentése és hozzákapcsolása ehhez a személyhez"
+                          className="rounded-md bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {sourceSaving ? 'Mentés...' : 'Forrás mentése'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {sources.length === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      Még nincs rögzített forrás (például anyakönyv, fénykép vagy családi elbeszélés) ehhez a személyhez.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {sources.map((item) => (
+                        <li
+                          key={item.source_id}
+                          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-semibold text-slate-900">
+                                {item.source.title}
+                              </div>
+                              <div
+                                title={SOURCE_TYPE_TOOLTIPS[item.source.source_type]}
+                                className="mt-0.5 text-[11px] text-slate-600"
+                              >
+                                <span className="font-medium text-slate-700">
+                                  {SOURCE_TYPE_LABELS[item.source.source_type]}
+                                </span>
+                                {item.source.reference ? ` · ${item.source.reference}` : ''}
+                                {item.citation_note ? ` · ${item.citation_note}` : ''}
+                              </div>
+                              {item.source.notes && (
+                                <p className="mt-1 whitespace-pre-wrap text-[11px] text-slate-500">
+                                  {item.source.notes}
+                                </p>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setConfirmState({
+                                  kind: 'delete_source_link',
+                                  sourceId: item.source_id,
+                                  sourceTitle: item.source.title,
+                                })
+                              }
+                              title="Forráshivatkozás eltávolítása erről az adatlapról"
+                              aria-label={`${item.source.title} forrás eltávolítása`}
+                              className="rounded p-1 text-slate-400 hover:bg-white hover:text-red-700 shrink-0"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -916,7 +1275,9 @@ export function PersonEditorDrawer({
                   ? 'Portrékép eltávolítása'
                   : confirmState.kind === 'delete_union'
                     ? 'Párkapcsolat törlése'
-                    : 'Szülő–gyermek kapcsolat bontása'
+                    : confirmState.kind === 'delete_source_link'
+                      ? 'Forráshivatkozás eltávolítása'
+                      : 'Szülő–gyermek kapcsolat bontása'
           }
           description={
             confirmState.kind === 'discard_changes'
@@ -927,14 +1288,18 @@ export function PersonEditorDrawer({
                   ? 'A személyhez feltöltött portrékép el lesz távolítva.'
                   : confirmState.kind === 'delete_union'
                     ? `Biztosan törlöd a következő kapcsolatot: ${confirmState.partnerLabel}? A személyek önmagukban megmaradnak a fán.`
-                    : confirmState.kind === 'delete_parent_link'
-                      ? `Biztosan megszünteted a szülő–gyermek kapcsolatot ${confirmState.parentName} és ${person.full_name} között?`
-                      : `Biztosan megszünteted a szülő–gyermek kapcsolatot ${person.full_name} és ${confirmState.childName} között?`
+                    : confirmState.kind === 'delete_source_link'
+                      ? `Biztosan eltávolítod a következő forrást ${person.full_name} adatlapjáról: ${confirmState.sourceTitle}? Ha más személynél is szerepel, ott megmarad.`
+                      : confirmState.kind === 'delete_parent_link'
+                        ? `Biztosan megszünteted a szülő–gyermek kapcsolatot ${confirmState.parentName} és ${person.full_name} között?`
+                        : `Biztosan megszünteted a szülő–gyermek kapcsolatot ${person.full_name} és ${confirmState.childName} között?`
           }
           confirmLabel={
             confirmState.kind === 'discard_changes'
               ? 'Változások elvetése'
-              : 'Igen, törlöm'
+              : confirmState.kind === 'delete_source_link'
+                ? 'Igen, eltávolítom'
+                : 'Igen, törlöm'
           }
           cancelLabel={
             confirmState.kind === 'discard_changes' ? 'Maradok az adatlapon' : 'Mégse'

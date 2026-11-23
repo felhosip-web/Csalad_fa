@@ -161,6 +161,36 @@ def delete_avatar(person_id: str) -> dict[str, Any]:
     return {"person": service.remove_person_avatar(person_id)}
 
 
+@app.post("/api/persons/{person_id}/sources", status_code=201)
+def add_person_source(person_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    return service.add_source_to_person(person_id, payload)
+
+
+@app.delete("/api/persons/{person_id}/sources/{source_id}")
+def delete_person_source(person_id: str, source_id: str) -> dict[str, Any]:
+    return service.remove_source_from_person(person_id, source_id)
+
+
+@app.get("/api/sources")
+def list_sources(search: str = Query(default="")) -> dict[str, Any]:
+    return {"sources": service.list_sources(search=search)}
+
+
+@app.post("/api/sources", status_code=201)
+def create_source(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    return {"source": service.create_source(payload)}
+
+
+@app.patch("/api/sources/{source_id}")
+def update_source(source_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    return {"source": service.update_source(source_id, payload)}
+
+
+@app.delete("/api/sources/{source_id}")
+def delete_source(source_id: str) -> dict[str, Any]:
+    return service.delete_source(source_id)
+
+
 @app.post("/api/unions", status_code=201)
 def create_union(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return {"union": service.create_union(payload)}
@@ -212,6 +242,28 @@ async def import_package(file: UploadFile = File(...)) -> dict[str, Any]:
         tmp_file = Path(tmp_dir) / "upload.ftree"
         tmp_file.write_bytes(raw_bytes)
         return service.import_package(tmp_file)
+
+
+@app.get("/api/gedcom/export")
+def export_gedcom() -> Response:
+    ged_bytes = service.export_gedcom().encode("utf-8")
+    return Response(
+        content=ged_bytes,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="csaladfa.ged"'},
+    )
+
+
+@app.post("/api/gedcom/import")
+async def import_gedcom(file: UploadFile = File(...)) -> dict[str, Any]:
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise PackageError(
+            "A kiválasztott GEDCOM (.ged) fájl üres.",
+            code="EMPTY_GEDCOM",
+            hint="Válassz ki egy érvényes, adatokat tartalmazó .ged fájlt.",
+        )
+    return service.import_gedcom(raw_bytes)
 
 
 @app.post("/api/package/new")

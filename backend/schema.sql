@@ -1,4 +1,4 @@
--- Családfa SQLite Schema (v1)
+-- Családfa SQLite Schema (v2)
 -- Foreign keys must also be enabled per connection: PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -53,6 +53,25 @@ CREATE TABLE IF NOT EXISTS parent_child (
     CHECK (child_id != parent_id)
 );
 
+CREATE TABLE IF NOT EXISTS sources (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL DEFAULT 'document'
+        CHECK (source_type IN ('registry', 'photo', 'oral_history', 'document', 'other')),
+    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
+    reference TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS person_sources (
+    person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    citation_note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (person_id, source_id)
+);
+
 -- Indexes for fast genealogy traversal & search
 CREATE INDEX IF NOT EXISTS idx_persons_full_name
     ON persons(full_name COLLATE NOCASE);
@@ -80,3 +99,16 @@ CREATE INDEX IF NOT EXISTS idx_parent_child_parent
 
 CREATE INDEX IF NOT EXISTS idx_parent_child_union
     ON parent_child(union_id);
+
+CREATE INDEX IF NOT EXISTS idx_sources_type
+    ON sources(source_type);
+
+CREATE INDEX IF NOT EXISTS idx_sources_title
+    ON sources(title COLLATE NOCASE);
+
+CREATE INDEX IF NOT EXISTS idx_person_sources_person
+    ON person_sources(person_id);
+
+CREATE INDEX IF NOT EXISTS idx_person_sources_source
+    ON person_sources(source_id);
+
