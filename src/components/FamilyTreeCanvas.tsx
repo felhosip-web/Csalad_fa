@@ -18,7 +18,7 @@ import {
   UserPlus,
 } from 'lucide-react';
 import type { ParentChild, Person, UndoState, UnionRecord } from '../types/family';
-import { GENDER_LABELS, RELATION_TYPE_LABELS } from '../types/family';
+import { GENDER_LABELS } from '../types/family';
 import { formatCardYears, getInitials } from '../utils/hungarian';
 import {
   CARD_HEIGHT,
@@ -110,15 +110,18 @@ export function FamilyTreeCanvas({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   const layout = useMemo(
     () => computeFamilyTreeLayout(persons, unions, relations),
     [persons, unions, relations],
   );
 
+  const activeFocusId = hoveredId ?? selectedId;
+
   const focusSet = useMemo(
-    () => getDirectFocusSet(selectedId, layout),
-    [selectedId, layout],
+    () => getDirectFocusSet(activeFocusId, layout),
+    [activeFocusId, layout],
   );
 
   const fitToView = useCallback(() => {
@@ -461,61 +464,173 @@ export function FamilyTreeCanvas({
           height: layout.height,
         }}
       >
-        {/* Kapcsolati SVG réteg */}
+        {/* Kapcsolati SVG réteg (gyűjtősínes vonalvezetés és kapcsolati középpontok) */}
         <svg
           width={layout.width}
           height={layout.height}
           className="pointer-events-none absolute inset-0 overflow-visible"
         >
-          {/* Szülő-gyermek ágak és származtatási nyilak */}
-          {layout.childEdges.map((edge) => {
-            const isHighlighted = !focusSet || focusSet.edgeIds.has(edge.id);
-            const strokeColor =
-              focusSet && isHighlighted
+          {/* 1. Leszármazási gyűjtősínek (gerinc + vízszintes gyűjtősín + gyermek ágak és nyilak) */}
+          {[...layout.buses]
+            .sort(
+              (a, b) =>
+                Number(Boolean(!focusSet || focusSet.busIds.has(a.id))) -
+                Number(Boolean(!focusSet || focusSet.busIds.has(b.id))),
+            )
+            .map((bus) => {
+            const isStemHighlighted = !focusSet || focusSet.busIds.has(bus.id);
+            const stemColor =
+              focusSet && isStemHighlighted
                 ? '#0f766e'
-                : edge.isBiological
+                : bus.stemIsBiological
                   ? '#64748b'
                   : '#94a3b8';
-            const edgeOpacity = isHighlighted ? 1 : 0.22;
-            const relLabel = RELATION_TYPE_LABELS[edge.relationType];
-            const edgeTitle = edge.isBiological
-              ? `${relLabel} leszármazási ág (a nyíl a gyermek felé mutat)`
-              : `${relLabel} kapcsolat (nem vérszerinti, szaggatott ág, a nyíl a gyermek felé mutat)`;
+            const stemOpacity = isStemHighlighted ? 1 : 0.22;
 
             return (
-              <g key={edge.id} className="transition-opacity duration-150">
+              <g key={bus.id}>
+                {/* Kapcsolati középpont jelölő egyedülálló szülői ágnál (ha nincs párkapcsolati kör) */}
+                {!bus.unionId && (
+                  <circle
+                    cx={bus.anchorX}
+                    cy={bus.anchorY}
+                    r={3.5}
+                    fill={stemColor}
+                    fillOpacity={stemOpacity}
+                    stroke="#ffffff"
+                    strokeWidth={1.25}
+                    style={{ pointerEvents: 'all' }}
+                    className="transition-opacity duration-150"
+                  >
+                    <title>{bus.stemTooltip}</title>
+                  </circle>
+                )}
+
+                {/* Közös függőleges leszármazási gerinc a középponttól a gyűjtősínig */}
                 <path
-                  d={edge.svgPath}
+                  d={bus.stemPath}
                   fill="none"
-                  stroke={strokeColor}
-                  strokeWidth={focusSet && isHighlighted ? 2.2 : 1.75}
-                  strokeOpacity={edgeOpacity}
-                  strokeDasharray={edge.isBiological ? undefined : '6 4'}
+                  stroke={stemColor}
+                  strokeWidth={focusSet && isStemHighlighted ? 2.2 : 1.75}
+                  strokeOpacity={stemOpacity}
+                  strokeDasharray={bus.stemIsBiological ? undefined : '6 4'}
                   strokeLinecap="round"
-                  strokeLinejoin="round"
+                  className="transition-opacity duration-150"
                 />
-                {/* Lefelé, a gyermek kártyája felé mutató iránymutató nyílhegy */}
                 <path
-                  d={`M ${edge.arrowX - 4.5} ${edge.arrowY - 8} L ${edge.arrowX} ${edge.arrowY - 1} L ${edge.arrowX + 4.5} ${edge.arrowY - 8} Z`}
-                  fill={strokeColor}
-                  fillOpacity={edgeOpacity}
-                />
-                {/* Kényelmesebb egérrel való rámutatási felület a magyar súgóhoz */}
-                <path
-                  d={edge.svgPath}
+                  d={bus.stemPath}
                   fill="none"
                   stroke="transparent"
                   strokeWidth={14}
                   style={{ pointerEvents: 'stroke' }}
                 >
-                  <title>{edgeTitle}</title>
+                  <title>{bus.stemTooltip}</title>
                 </path>
+
+                {/* Vízszintes gyűjtősín szakaszai a gyermekek felé */}
+                {bus.segments.map((seg) => {
+                  const isSegHighlighted =
+                    !focusSet || seg.edgeIds.some((eid) => focusSet.edgeIds.has(eid));
+                  const segColor =
+                    focusSet && isSegHighlighted
+                      ? '#0f766e'
+                      : seg.isBiological
+                        ? '#64748b'
+                        : '#94a3b8';
+                  const segOpacity = isSegHighlighted ? 1 : 0.22;
+
+                  return (
+                    <g key={seg.id} className="transition-opacity duration-150">
+                      <path
+                        d={seg.svgPath}
+                        fill="none"
+                        stroke={segColor}
+                        strokeWidth={focusSet && isSegHighlighted ? 2.2 : 1.75}
+                        strokeOpacity={segOpacity}
+                        strokeDasharray={seg.isBiological ? undefined : '6 4'}
+                        strokeLinecap="round"
+                      />
+                      <path
+                        d={seg.svgPath}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth={14}
+                        style={{ pointerEvents: 'stroke' }}
+                      >
+                        <title>{bus.busTooltip}</title>
+                      </path>
+                    </g>
+                  );
+                })}
+
+                {/* Elágazási csomópont a gerinc és a vízszintes gyűjtősín találkozásánál */}
+                {bus.segments.length > 0 && (
+                  <circle
+                    cx={bus.anchorX}
+                    cy={bus.busY}
+                    r={2.8}
+                    fill={stemColor}
+                    fillOpacity={stemOpacity}
+                    style={{ pointerEvents: 'all' }}
+                    className="transition-opacity duration-150"
+                  >
+                    <title>{bus.busTooltip}</title>
+                  </circle>
+                )}
+
+                {/* Gyermekekhez leágazó függőleges vonalak és nyílhegyek */}
+                {bus.children.map((edge) => {
+                  const isHighlighted = !focusSet || focusSet.edgeIds.has(edge.id);
+                  const edgeColor =
+                    focusSet && isHighlighted
+                      ? '#0f766e'
+                      : edge.isBiological
+                        ? '#64748b'
+                        : '#94a3b8';
+                  const edgeOpacity = isHighlighted ? 1 : 0.22;
+
+                  return (
+                    <g key={edge.id} className="transition-opacity duration-150">
+                      <path
+                        d={edge.svgPath}
+                        fill="none"
+                        stroke={edgeColor}
+                        strokeWidth={focusSet && isHighlighted ? 2.2 : 1.75}
+                        strokeOpacity={edgeOpacity}
+                        strokeDasharray={edge.isBiological ? undefined : '6 4'}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      {/* Lefelé, a gyermek kártyája felé mutató iránymutató nyílhegy */}
+                      <path
+                        d={`M ${edge.arrowX - 4.5} ${edge.arrowY - 8} L ${edge.arrowX} ${edge.arrowY - 1} L ${edge.arrowX + 4.5} ${edge.arrowY - 8} Z`}
+                        fill={edgeColor}
+                        fillOpacity={edgeOpacity}
+                      />
+                      <path
+                        d={edge.svgPath}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth={14}
+                        style={{ pointerEvents: 'stroke' }}
+                      >
+                        <title>{edge.tooltip}</title>
+                      </path>
+                    </g>
+                  );
+                })}
               </g>
             );
           })}
 
-          {/* Házastársi / élettársi kapcsolatok */}
-          {layout.unions.map((lu) => {
+          {/* 2. Házastársi / élettársi kapcsolatok és kapcsolati középpontok */}
+          {[...layout.unions]
+            .sort(
+              (a, b) =>
+                Number(Boolean(!focusSet || focusSet.unionIds.has(a.union.id))) -
+                Number(Boolean(!focusSet || focusSet.unionIds.has(b.union.id))),
+            )
+            .map((lu) => {
             if (!lu.svgPath) return null;
             const isHighlighted = !focusSet || focusSet.unionIds.has(lu.union.id);
             const isBroken = lu.status === 'divorced' || lu.status === 'separated';
@@ -539,10 +654,10 @@ export function FamilyTreeCanvas({
                 <circle
                   cx={lu.anchorX}
                   cy={lu.anchorY}
-                  r={4.2}
+                  r={4.5}
                   fill={isBroken ? '#fffbeb' : '#0f766e'}
                   stroke={isBroken ? '#b45309' : '#ffffff'}
-                  strokeWidth={1.5}
+                  strokeWidth={1.6}
                   style={{ pointerEvents: 'all' }}
                 >
                   <title>{lu.tooltip}</title>
@@ -552,7 +667,7 @@ export function FamilyTreeCanvas({
           })}
         </svg>
 
-        {/* Kapcsolati állapotfeliratok (pl. Elváltak) */}
+        {/* Kapcsolati állapotfeliratok (pl. Elváltak, Házasok) */}
         {layout.unions.map((lu) => {
           if (!lu.p2 || !lu.label) return null;
           const isHighlighted = !focusSet || focusSet.unionIds.has(lu.union.id);
@@ -563,7 +678,7 @@ export function FamilyTreeCanvas({
               title={lu.tooltip}
               style={{
                 left: lu.labelX,
-                top: lu.labelY - 22,
+                top: lu.labelY,
                 transform: 'translateX(-50%)',
               }}
               className={`pointer-events-auto cursor-help absolute whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium transition-opacity duration-150 ${
@@ -583,8 +698,9 @@ export function FamilyTreeCanvas({
         {layout.nodes.map((node) => {
           const { person } = node;
           const isSelected = person.id === selectedId;
+          const isFocusedTarget = person.id === activeFocusId;
           const isInFocus = !focusSet || focusSet.personIds.has(person.id);
-          const isDirectNeighbor = Boolean(focusSet && isInFocus && !isSelected);
+          const isDirectNeighbor = Boolean(focusSet && isInFocus && !isFocusedTarget);
           const years = formatCardYears(person);
           const personUnions = unions
             .filter((u) => u.partner1_id === person.id || u.partner2_id === person.id)
@@ -602,6 +718,8 @@ export function FamilyTreeCanvas({
             <div
               key={person.id}
               data-person-card="true"
+              onMouseEnter={() => setHoveredId(person.id)}
+              onMouseLeave={() => setHoveredId((cur) => (cur === person.id ? null : cur))}
               style={{
                 left: node.x,
                 top: node.y,
@@ -632,7 +750,7 @@ export function FamilyTreeCanvas({
                 }}
                 className={`group flex h-[96px] w-full cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-all ${genderCardAccent(
                   person.gender,
-                  isSelected,
+                  isFocusedTarget,
                   isDirectNeighbor,
                 )}`}
               >
@@ -779,7 +897,7 @@ export function FamilyTreeCanvas({
             <span>Szaggatott ág: nem vérszerinti</span>
           </span>
           <span aria-hidden="true">·</span>
-          <span>Húzd a hátteret a mozgatáshoz, görgess a nagyításhoz</span>
+          <span>Rámutatással vagy kattintással kiemeled a közvetlen kapcsolatokat</span>
         </div>
       )}
     </div>

@@ -5,14 +5,19 @@ import type {
   UnionRecord,
   UnionStatus,
 } from '../types/family';
-import { UNION_STATUS_CANVAS_LABELS, UNION_STATUS_LABELS } from '../types/family';
+import {
+  RELATION_TYPE_LABELS,
+  UNION_STATUS_CANVAS_LABELS,
+  UNION_STATUS_LABELS,
+} from '../types/family';
 import { extractDisplayYear, formatHungarianDate } from './hungarian';
 
 export const CARD_WIDTH = 228;
 export const CARD_HEIGHT = 96;
 export const UNION_GAP = 92;
 export const SIBLING_GAP = 40;
-export const ROW_STEP = 204; // CARD_HEIGHT + 108px jelölő- és vonalfolyosó
+export const ROW_STEP = 212; // Alapértelmezett generációs lépésköz
+export const LANE_STEP = 14;
 export const CANVAS_PADDING = 80;
 
 export interface LayoutNode {
@@ -40,7 +45,9 @@ export interface LayoutUnion {
 
 export interface LayoutChildEdge {
   id: string;
+  busId: string;
   childId: string;
+  childName: string;
   parentIds: string[];
   unionId: string | null;
   relationType: RelationType;
@@ -48,12 +55,45 @@ export interface LayoutChildEdge {
   arrowX: number;
   arrowY: number;
   isBiological: boolean;
+  tooltip: string;
+}
+
+export interface LayoutBusSegment {
+  id: string;
+  x1: number;
+  x2: number;
+  y: number;
+  svgPath: string;
+  edgeIds: string[];
+  isBiological: boolean;
+}
+
+export interface LayoutDescentBus {
+  id: string;
+  corridorGen: number;
+  laneIndex: number;
+  anchorX: number;
+  anchorY: number;
+  busY: number;
+  minX: number;
+  maxX: number;
+  unionId: string | null;
+  parentIds: string[];
+  childIds: string[];
+  edgeIds: string[];
+  stemPath: string;
+  stemIsBiological: boolean;
+  segments: LayoutBusSegment[];
+  children: LayoutChildEdge[];
+  stemTooltip: string;
+  busTooltip: string;
 }
 
 export interface TreeLayoutResult {
   nodes: LayoutNode[];
   nodeById: Map<string, LayoutNode>;
   unions: LayoutUnion[];
+  buses: LayoutDescentBus[];
   childEdges: LayoutChildEdge[];
   width: number;
   height: number;
@@ -276,6 +316,7 @@ export function computeFamilyTreeLayout(
       nodes: [],
       nodeById: new Map(),
       unions: [],
+      buses: [],
       childEdges: [],
       width: 800,
       height: 500,
@@ -399,196 +440,205 @@ export function computeFamilyTreeLayout(
   }
   const shiftX = Number.isFinite(minX) ? CANVAS_PADDING - minX : 0;
 
-  const nodes: LayoutNode[] = [];
-  const nodeById = new Map<string, LayoutNode>();
-
-  for (let g = 0; g <= maxGen; g++) {
-    const rowIds = rows.get(g) ?? [];
-    for (const id of rowIds) {
-      const person = personById.get(id);
-      if (!person) continue;
-      const node: LayoutNode = {
-        person,
-        generation: g,
-        x: (xPos.get(id) ?? CANVAS_PADDING) + shiftX,
-        y: CANVAS_PADDING + g * ROW_STEP,
-      };
-      nodes.push(node);
-      nodeById.set(id, node);
-    }
+  const finalX = new Map<string, number>();
+  for (const [id, x] of xPos.entries()) {
+    finalX.set(id, x + shiftX);
   }
-
-  // Párkapcsolati vonalak felépítése
-  const layoutUnions: LayoutUnion[] = [];
-  const unionById = new Map<string, LayoutUnion>();
 
   // Segédtérkép annak eldöntésére, szomszédos-e két partner a sorban
   const rowSortedOrder = new Map<number, string[]>();
   for (let g = 0; g <= maxGen; g++) {
     const sorted = (rows.get(g) ?? [])
       .slice()
-      .sort((a, b) => (nodeById.get(a)?.x ?? 0) - (nodeById.get(b)?.x ?? 0));
+      .sort((a, b) => (finalX.get(a) ?? 0) - (finalX.get(b) ?? 0));
     rowSortedOrder.set(g, sorted);
   }
 
-  let nonAdjacentOffsetIdx = 0;
+  // Párkapcsolati alapadatok (X középpont, szomszédosság, nem szomszédos hidak sora)
+  interface UnionGeomDraft {
+    union: UnionRecord;
+    p1Id: string;
+    p2Id: string | null;
+    leftId: string;
+    rightId: string | null;
+    isAdjacent: boolean;
+    sameRow: boolean;
+    anchorX: number;
+    bridgeCorridorGen: number | null;
+    bridgeSlot: number;
+  }
+
+  const unionDrafts: UnionGeomDraft[] = [];
+  const unionDraftById = new Map<string, UnionGeomDraft>();
+  const bridgeCountByCorridor = new Map<number, number>();
 
   for (const u of unions) {
-    const n1 = nodeById.get(u.partner1_id);
-    if (!n1) continue;
-    const n2 = u.partner2_id ? nodeById.get(u.partner2_id) ?? null : null;
+    const x1 = finalX.get(u.partner1_id);
+    if (x1 === undefined) continue;
+    const g1 = genMap.get(u.partner1_id) ?? 0;
+    const x2 = u.partner2_id ? finalX.get(u.partner2_id) : undefined;
+    const g2 = u.partner2_id ? genMap.get(u.partner2_id) : undefined;
 
-    if (!n2) {
-      const anchorX = n1.x + CARD_WIDTH / 2;
-      const anchorY = n1.y + CARD_HEIGHT;
-      const lu: LayoutUnion = {
+    if (!u.partner2_id || x2 === undefined || g2 === undefined) {
+      const draft: UnionGeomDraft = {
         union: u,
-        p1: n1,
-        p2: null,
+        p1Id: u.partner1_id,
+        p2Id: null,
+        leftId: u.partner1_id,
+        rightId: null,
         isAdjacent: true,
         sameRow: true,
-        anchorX,
-        anchorY,
-        label: buildOrthogonalUnionLabel(u),
-        tooltip: buildUnionTooltip(u),
-        status: u.status,
-        svgPath: '',
-        labelX: anchorX,
-        labelY: anchorY,
+        anchorX: x1 + CARD_WIDTH / 2,
+        bridgeCorridorGen: null,
+        bridgeSlot: 0,
       };
-      layoutUnions.push(lu);
-      unionById.set(u.id, lu);
+      unionDrafts.push(draft);
+      unionDraftById.set(u.id, draft);
       continue;
     }
 
-    const left = n1.x <= n2.x ? n1 : n2;
-    const right = n1.x <= n2.x ? n2 : n1;
-    const sameRow = left.generation === right.generation;
-    let isAdjacent = false;
+    const leftId = x1 <= x2 ? u.partner1_id : u.partner2_id;
+    const rightId = x1 <= x2 ? u.partner2_id : u.partner1_id;
+    const leftX = Math.min(x1, x2);
+    const rightX = Math.max(x1, x2);
+    const leftGen = x1 <= x2 ? g1 : g2;
+    const rightGen = x1 <= x2 ? g2 : g1;
+    const sameRow = leftGen === rightGen;
 
+    let isAdjacent = false;
     if (sameRow) {
-      const sortedRow = rowSortedOrder.get(left.generation) ?? [];
-      const i1 = sortedRow.indexOf(left.person.id);
-      const i2 = sortedRow.indexOf(right.person.id);
+      const sortedRow = rowSortedOrder.get(leftGen) ?? [];
+      const i1 = sortedRow.indexOf(leftId);
+      const i2 = sortedRow.indexOf(rightId);
       isAdjacent = Math.abs(i1 - i2) === 1;
     }
 
-    let svgPath = '';
-    let anchorX = (left.x + CARD_WIDTH / 2 + right.x + CARD_WIDTH / 2) / 2;
-    let anchorY = left.y + CARD_HEIGHT / 2;
-    let labelX = anchorX;
-    let labelY = anchorY;
+    let anchorX = (leftX + CARD_WIDTH / 2 + rightX + CARD_WIDTH / 2) / 2;
+    let bridgeCorridorGen: number | null = null;
+    let bridgeSlot = 0;
 
     if (sameRow && isAdjacent) {
-      const x1 = left.x + CARD_WIDTH;
-      const x2 = right.x;
-      const y = left.y + CARD_HEIGHT / 2;
-      svgPath = `M ${x1} ${y} L ${x2} ${y}`;
-      anchorX = (x1 + x2) / 2;
-      anchorY = y;
-      labelX = anchorX;
-      labelY = y;
+      anchorX = (leftX + CARD_WIDTH + rightX) / 2;
     } else {
-      const x1 = left.x + CARD_WIDTH / 2;
-      const y1 = left.y + CARD_HEIGHT;
-      const x2 = right.x + CARD_WIDTH / 2;
-      const y2 = right.y + CARD_HEIGHT;
-      const dropLevel = Math.max(y1, y2) + 20 + (nonAdjacentOffsetIdx % 3) * 10;
-      nonAdjacentOffsetIdx += 1;
-      svgPath = `M ${x1} ${y1} V ${dropLevel} H ${x2} V ${y2}`;
-      anchorX = (x1 + x2) / 2;
-      anchorY = dropLevel;
-      labelX = anchorX;
-      labelY = dropLevel;
+      bridgeCorridorGen = Math.max(leftGen, rightGen);
+      bridgeSlot = bridgeCountByCorridor.get(bridgeCorridorGen) ?? 0;
+      bridgeCountByCorridor.set(bridgeCorridorGen, bridgeSlot + 1);
     }
 
-    const lu: LayoutUnion = {
+    const draft: UnionGeomDraft = {
       union: u,
-      p1: left,
-      p2: right,
+      p1Id: u.partner1_id,
+      p2Id: u.partner2_id,
+      leftId,
+      rightId,
       isAdjacent,
       sameRow,
       anchorX,
-      anchorY,
-      label: buildOrthogonalUnionLabel(u),
-      tooltip: buildUnionTooltip(u),
-      status: u.status,
-      svgPath,
-      labelX,
-      labelY,
+      bridgeCorridorGen,
+      bridgeSlot,
     };
-    layoutUnions.push(lu);
-    unionById.set(u.id, lu);
+    unionDrafts.push(draft);
+    unionDraftById.set(u.id, draft);
   }
 
-  // Szülő-gyermek élek csoportosítása union / szülőpárok szerint
+  // Szülő-gyermek kapcsolatok csoportosítása kapcsolati középpontok (buszok) szerint
   const relationsByChild = new Map<string, ParentChild[]>();
   for (const rel of relations) {
-    if (!nodeById.has(rel.child_id) || !nodeById.has(rel.parent_id)) continue;
+    if (!finalX.has(rel.child_id) || !finalX.has(rel.parent_id)) continue;
     if (!relationsByChild.has(rel.child_id)) relationsByChild.set(rel.child_id, []);
     relationsByChild.get(rel.child_id)!.push(rel);
   }
 
-  // Segéd: két szülő között létezik-e union, ha union_id nincs kitöltve
-  const findUnionForParents = (pA: string, pB: string): LayoutUnion | undefined => {
-    for (const lu of layoutUnions) {
-      if (!lu.p2) continue;
-      const ids = [lu.p1.person.id, lu.p2.person.id];
-      if (ids.includes(pA) && ids.includes(pB)) return lu;
+  const findUnionDraftForParents = (pA: string, pB: string): UnionGeomDraft | undefined => {
+    for (const d of unionDrafts) {
+      if (!d.rightId) continue;
+      if ((d.leftId === pA && d.rightId === pB) || (d.leftId === pB && d.rightId === pA)) {
+        return d;
+      }
     }
     return undefined;
   };
 
-  interface AnchorGroup {
-    anchorX: number;
-    anchorY: number;
-    unionId: string | null;
-    items: Array<{
-      childNode: LayoutNode;
-      parentIds: string[];
-      relationType: RelationType;
-    }>;
+  interface BusDraftItem {
+    childId: string;
+    childX: number;
+    childGen: number;
+    parentIds: string[];
+    relationType: RelationType;
   }
 
-  const anchorGroups = new Map<string, AnchorGroup>();
+  interface BusDraft {
+    id: string;
+    anchorX: number;
+    unionId: string | null;
+    singleParentId: string | null;
+    parentIds: string[];
+    items: BusDraftItem[];
+    corridorGen: number;
+    laneIndex: number;
+    minX: number;
+    maxX: number;
+  }
+
+  const busDraftMap = new Map<string, BusDraft>();
 
   for (const [childId, childRels] of relationsByChild.entries()) {
-    const childNode = nodeById.get(childId)!;
-    const explicitUnionRel = childRels.find((r) => r.union_id && unionById.has(r.union_id));
+    const childCenterX = (finalX.get(childId) ?? CANVAS_PADDING) + CARD_WIDTH / 2;
+    const childGen = genMap.get(childId) ?? 0;
+    const explicitUnionRel = childRels.find((r) => r.union_id && unionDraftById.has(r.union_id));
 
     if (explicitUnionRel && explicitUnionRel.union_id) {
-      const lu = unionById.get(explicitUnionRel.union_id)!;
-      const key = `u:${lu.union.id}`;
-      if (!anchorGroups.has(key)) {
-        anchorGroups.set(key, {
-          anchorX: lu.anchorX,
-          anchorY: lu.anchorY,
-          unionId: lu.union.id,
+      const ud = unionDraftById.get(explicitUnionRel.union_id)!;
+      const key = `u:${ud.union.id}`;
+      if (!busDraftMap.has(key)) {
+        const pIds = ud.rightId ? [ud.leftId, ud.rightId] : [ud.leftId];
+        busDraftMap.set(key, {
+          id: key,
+          anchorX: ud.anchorX,
+          unionId: ud.union.id,
+          singleParentId: null,
+          parentIds: pIds,
           items: [],
+          corridorGen: Math.max(0, childGen - 1),
+          laneIndex: 0,
+          minX: ud.anchorX,
+          maxX: ud.anchorX,
         });
       }
-      anchorGroups.get(key)!.items.push({
-        childNode,
-        parentIds: childRels.map((r) => r.parent_id),
+      const bus = busDraftMap.get(key)!;
+      bus.items.push({
+        childId,
+        childX: childCenterX,
+        childGen,
+        parentIds: Array.from(new Set([...bus.parentIds, ...childRels.map((r) => r.parent_id)])),
         relationType: explicitUnionRel.relation_type,
       });
       continue;
     }
 
     if (childRels.length === 2) {
-      const matchedUnion = findUnionForParents(childRels[0].parent_id, childRels[1].parent_id);
+      const matchedUnion = findUnionDraftForParents(childRels[0].parent_id, childRels[1].parent_id);
       if (matchedUnion) {
         const key = `u:${matchedUnion.union.id}`;
-        if (!anchorGroups.has(key)) {
-          anchorGroups.set(key, {
+        if (!busDraftMap.has(key)) {
+          busDraftMap.set(key, {
+            id: key,
             anchorX: matchedUnion.anchorX,
-            anchorY: matchedUnion.anchorY,
             unionId: matchedUnion.union.id,
+            singleParentId: null,
+            parentIds: [matchedUnion.leftId, matchedUnion.rightId!],
             items: [],
+            corridorGen: Math.max(0, childGen - 1),
+            laneIndex: 0,
+            minX: matchedUnion.anchorX,
+            maxX: matchedUnion.anchorX,
           });
         }
-        anchorGroups.get(key)!.items.push({
-          childNode,
+        const bus = busDraftMap.get(key)!;
+        bus.items.push({
+          childId,
+          childX: childCenterX,
+          childGen,
           parentIds: childRels.map((r) => r.parent_id),
           relationType: childRels[0].relation_type,
         });
@@ -596,64 +646,324 @@ export function computeFamilyTreeLayout(
       }
     }
 
-    // Egyedülálló szülő vagy union nélküli szülő-kapcsolat
+    // Egyedülálló szülő vagy union nélküli szülői kapcsolat
     for (const rel of childRels) {
-      const parentNode = nodeById.get(rel.parent_id)!;
-      const key = `p:${parentNode.person.id}`;
-      if (!anchorGroups.has(key)) {
-        anchorGroups.set(key, {
-          anchorX: parentNode.x + CARD_WIDTH / 2,
-          anchorY: parentNode.y + CARD_HEIGHT,
+      const parentCenterX = (finalX.get(rel.parent_id) ?? CANVAS_PADDING) + CARD_WIDTH / 2;
+      const key = `p:${rel.parent_id}`;
+      if (!busDraftMap.has(key)) {
+        busDraftMap.set(key, {
+          id: key,
+          anchorX: parentCenterX,
           unionId: null,
+          singleParentId: rel.parent_id,
+          parentIds: [rel.parent_id],
           items: [],
+          corridorGen: Math.max(0, childGen - 1),
+          laneIndex: 0,
+          minX: parentCenterX,
+          maxX: parentCenterX,
         });
       }
-      anchorGroups.get(key)!.items.push({
-        childNode,
+      const bus = busDraftMap.get(key)!;
+      bus.items.push({
+        childId,
+        childX: childCenterX,
+        childGen,
         parentIds: [rel.parent_id],
         relationType: rel.relation_type,
       });
     }
   }
 
-  const childEdges: LayoutChildEdge[] = [];
-  let busLaneOffset = 0;
+  // Gyűjtősínek sávba osztása (interval scheduling generációs folyosónként)
+  const busesByCorridor = new Map<number, BusDraft[]>();
+  for (const bus of busDraftMap.values()) {
+    const minChildGen = Math.min(...bus.items.map((it) => it.childGen));
+    bus.corridorGen = Math.max(0, minChildGen - 1);
+    const xs = [bus.anchorX, ...bus.items.map((it) => it.childX)];
+    bus.minX = Math.min(...xs);
+    bus.maxX = Math.max(...xs);
+    if (!busesByCorridor.has(bus.corridorGen)) busesByCorridor.set(bus.corridorGen, []);
+    busesByCorridor.get(bus.corridorGen)!.push(bus);
+  }
 
-  for (const group of anchorGroups.values()) {
-    const laneDelta = (busLaneOffset % 4) * 8;
-    busLaneOffset += 1;
+  const laneCountByCorridor = new Map<number, number>();
+  for (const [corridorGen, corridorBuses] of busesByCorridor.entries()) {
+    corridorBuses.sort((a, b) => a.minX - b.minX || a.maxX - b.maxX);
+    const laneRightEdge: number[] = [];
+    for (const bus of corridorBuses) {
+      const spanMin = bus.minX - 14;
+      const spanMax = bus.maxX + 14;
+      let chosenLane = -1;
+      for (let i = 0; i < laneRightEdge.length; i++) {
+        if (laneRightEdge[i] <= spanMin) {
+          chosenLane = i;
+          laneRightEdge[i] = spanMax;
+          break;
+        }
+      }
+      if (chosenLane === -1) {
+        chosenLane = laneRightEdge.length;
+        laneRightEdge.push(spanMax);
+      }
+      bus.laneIndex = chosenLane;
+    }
+    laneCountByCorridor.set(corridorGen, laneRightEdge.length);
+  }
 
-    for (const item of group.items) {
-      const cx = item.childNode.x + CARD_WIDTH / 2;
-      const cy = item.childNode.y;
-      const endY = cy - 6;
-      const busY = Math.min(endY - 22 - laneDelta, Math.max(group.anchorY + 28, endY - 30));
-      const path =
-        Math.abs(group.anchorX - cx) < 1
-          ? `M ${group.anchorX} ${group.anchorY} L ${cx} ${endY}`
-          : `M ${group.anchorX} ${group.anchorY} V ${busY} H ${cx} V ${endY}`;
+  // Generációs Y koordináták meghatározása (dinamikusan bővül, ha több sáv van)
+  const rowY = new Map<number, number>();
+  const topPaddingByCorridor = new Map<number, number>();
+  let currentY = CANVAS_PADDING;
 
-      childEdges.push({
-        id: `${group.unionId ?? group.items[0].parentIds.join('-')}-${item.childNode.person.id}`,
-        childId: item.childNode.person.id,
-        parentIds: item.parentIds,
-        unionId: group.unionId,
-        relationType: item.relationType,
-        svgPath: path,
-        arrowX: cx,
-        arrowY: cy,
-        isBiological: item.relationType === 'biological',
-      });
+  for (let g = 0; g <= maxGen; g++) {
+    rowY.set(g, currentY);
+    const hasBridge = (bridgeCountByCorridor.get(g) ?? 0) > 0;
+    const topPad = hasBridge ? 42 : 28;
+    topPaddingByCorridor.set(g, topPad);
+    const lanes = Math.max(1, laneCountByCorridor.get(g) ?? 0);
+    const neededCorridor = topPad + lanes * LANE_STEP + 26;
+    const corridorHeight = Math.max(ROW_STEP - CARD_HEIGHT, neededCorridor);
+    currentY += CARD_HEIGHT + corridorHeight;
+  }
+
+  // Csomópontok végső elhelyezése
+  const nodes: LayoutNode[] = [];
+  const nodeById = new Map<string, LayoutNode>();
+
+  for (let g = 0; g <= maxGen; g++) {
+    const rowIds = rows.get(g) ?? [];
+    const y = rowY.get(g) ?? CANVAS_PADDING;
+    for (const id of rowIds) {
+      const person = personById.get(id);
+      if (!person) continue;
+      const node: LayoutNode = {
+        person,
+        generation: g,
+        x: finalX.get(id) ?? CANVAS_PADDING,
+        y,
+      };
+      nodes.push(node);
+      nodeById.set(id, node);
     }
   }
 
+  // Párkapcsolati vonalak és középpontok felépítése
+  const layoutUnions: LayoutUnion[] = [];
+  const unionById = new Map<string, LayoutUnion>();
+
+  for (const draft of unionDrafts) {
+    const n1 = nodeById.get(draft.leftId);
+    if (!n1) continue;
+    const n2 = draft.rightId ? nodeById.get(draft.rightId) ?? null : null;
+
+    if (!n2) {
+      const anchorX = n1.x + CARD_WIDTH / 2;
+      const anchorY = n1.y + CARD_HEIGHT;
+      const lu: LayoutUnion = {
+        union: draft.union,
+        p1: n1,
+        p2: null,
+        isAdjacent: true,
+        sameRow: true,
+        anchorX,
+        anchorY,
+        label: buildOrthogonalUnionLabel(draft.union),
+        tooltip: buildUnionTooltip(draft.union),
+        status: draft.union.status,
+        svgPath: '',
+        labelX: anchorX,
+        labelY: anchorY,
+      };
+      layoutUnions.push(lu);
+      unionById.set(draft.union.id, lu);
+      continue;
+    }
+
+    let svgPath = '';
+    let anchorX = draft.anchorX;
+    let anchorY = n1.y + CARD_HEIGHT / 2;
+    let labelX = anchorX;
+    let labelY = anchorY - 22;
+
+    if (draft.sameRow && draft.isAdjacent) {
+      const x1 = n1.x + CARD_WIDTH;
+      const x2 = n2.x;
+      const y = n1.y + CARD_HEIGHT / 2;
+      svgPath = `M ${x1} ${y} L ${x2} ${y}`;
+      anchorX = (x1 + x2) / 2;
+      anchorY = y;
+      labelX = anchorX;
+      labelY = y - 22;
+    } else {
+      const x1 = n1.x + CARD_WIDTH / 2;
+      const y1 = n1.y + CARD_HEIGHT;
+      const x2 = n2.x + CARD_WIDTH / 2;
+      const y2 = n2.y + CARD_HEIGHT;
+      const dropLevel = Math.max(y1, y2) + 16 + (draft.bridgeSlot % 2) * 8;
+      svgPath = `M ${x1} ${y1} V ${dropLevel} H ${x2} V ${y2}`;
+      anchorX = (x1 + x2) / 2;
+      anchorY = dropLevel;
+      labelX = anchorX;
+      labelY = dropLevel - 11;
+    }
+
+    const lu: LayoutUnion = {
+      union: draft.union,
+      p1: n1,
+      p2: n2,
+      isAdjacent: draft.isAdjacent,
+      sameRow: draft.sameRow,
+      anchorX,
+      anchorY,
+      label: buildOrthogonalUnionLabel(draft.union),
+      tooltip: buildUnionTooltip(draft.union),
+      status: draft.union.status,
+      svgPath,
+      labelX,
+      labelY,
+    };
+    layoutUnions.push(lu);
+    unionById.set(draft.union.id, lu);
+  }
+
+  // Gyűjtősínes (bus) leszármazási struktúra felépítése
+  const buses: LayoutDescentBus[] = [];
+  const childEdges: LayoutChildEdge[] = [];
+
+  for (const draft of busDraftMap.values()) {
+    const lu = draft.unionId ? unionById.get(draft.unionId) : undefined;
+    const singleParentNode = draft.singleParentId ? nodeById.get(draft.singleParentId) : undefined;
+
+    const anchorX = lu
+      ? lu.anchorX
+      : singleParentNode
+        ? singleParentNode.x + CARD_WIDTH / 2
+        : draft.anchorX;
+    const anchorY = lu
+      ? lu.anchorY
+      : singleParentNode
+        ? singleParentNode.y + CARD_HEIGHT
+        : CANVAS_PADDING;
+
+    const corridorBaseY = (rowY.get(draft.corridorGen) ?? CANVAS_PADDING) + CARD_HEIGHT;
+    const topPad = topPaddingByCorridor.get(draft.corridorGen) ?? 28;
+    const busY = Math.max(
+      anchorY + 14,
+      corridorBaseY + topPad + draft.laneIndex * LANE_STEP,
+    );
+
+    const parentNames = draft.parentIds
+      .map((pid) => personById.get(pid)?.full_name)
+      .filter((name): name is string => Boolean(name));
+    const parentContext =
+      parentNames.length >= 2
+        ? `${parentNames[0]} és ${parentNames[1]} kapcsolatából`
+        : parentNames.length === 1
+          ? `${parentNames[0]} ágáról`
+          : 'Szülői ágról';
+
+    const itemsSorted = [...draft.items].sort((a, b) => a.childX - b.childX);
+    const busChildEdges: LayoutChildEdge[] = [];
+
+    for (const item of itemsSorted) {
+      const childNode = nodeById.get(item.childId)!;
+      const cx = childNode.x + CARD_WIDTH / 2;
+      const cy = childNode.y;
+      const endY = cy - 6;
+      const isBiological = item.relationType === 'biological';
+      const relLabel = RELATION_TYPE_LABELS[item.relationType];
+      const tooltip = isBiological
+        ? `${relLabel} leszármazási ág: ${childNode.person.full_name} (a nyíl a gyermek felé mutat)`
+        : `${relLabel} kapcsolat (nem vérszerinti, szaggatott ág): ${childNode.person.full_name} (a nyíl a gyermek felé mutat)`;
+
+      const edge: LayoutChildEdge = {
+        id: `${draft.id}-${childNode.person.id}`,
+        busId: draft.id,
+        childId: childNode.person.id,
+        childName: childNode.person.full_name,
+        parentIds: item.parentIds,
+        unionId: draft.unionId,
+        relationType: item.relationType,
+        svgPath: `M ${cx} ${busY} L ${cx} ${endY}`,
+        arrowX: cx,
+        arrowY: cy,
+        isBiological,
+        tooltip,
+      };
+      busChildEdges.push(edge);
+      childEdges.push(edge);
+    }
+
+    // Vízszintes gyűjtősín atomi szakaszokra bontása az X-megállók között
+    const rawStops = [anchorX, ...busChildEdges.map((e) => e.arrowX)].sort((a, b) => a - b);
+    const uniqueStops: number[] = [];
+    for (const stop of rawStops) {
+      if (uniqueStops.length === 0 || Math.abs(stop - uniqueStops[uniqueStops.length - 1]) >= 1) {
+        uniqueStops.push(stop);
+      }
+    }
+
+    const segments: LayoutBusSegment[] = [];
+    for (let i = 0; i < uniqueStops.length - 1; i++) {
+      const x1 = uniqueStops[i];
+      const x2 = uniqueStops[i + 1];
+      if (x2 - x1 < 1) continue;
+      const mid = (x1 + x2) / 2;
+
+      const carriedEdges = busChildEdges.filter((edge) => {
+        if (mid < anchorX) {
+          return edge.arrowX <= x1 + 0.9;
+        }
+        return edge.arrowX >= x2 - 0.9;
+      });
+
+      if (carriedEdges.length === 0) continue;
+
+      segments.push({
+        id: `${draft.id}-seg-${i}`,
+        x1,
+        x2,
+        y: busY,
+        svgPath: `M ${x1} ${busY} L ${x2} ${busY}`,
+        edgeIds: carriedEdges.map((e) => e.id),
+        isBiological: carriedEdges.some((e) => e.isBiological),
+      });
+    }
+
+    const stemIsBiological = busChildEdges.some((e) => e.isBiological);
+    const childCount = busChildEdges.length;
+
+    buses.push({
+      id: draft.id,
+      corridorGen: draft.corridorGen,
+      laneIndex: draft.laneIndex,
+      anchorX,
+      anchorY,
+      busY,
+      minX: uniqueStops[0] ?? anchorX,
+      maxX: uniqueStops[uniqueStops.length - 1] ?? anchorX,
+      unionId: draft.unionId,
+      parentIds: draft.parentIds,
+      childIds: busChildEdges.map((e) => e.childId),
+      edgeIds: busChildEdges.map((e) => e.id),
+      stemPath: `M ${anchorX} ${anchorY} L ${anchorX} ${busY}`,
+      stemIsBiological,
+      segments,
+      children: busChildEdges,
+      stemTooltip: `Leszármazási gerinc (${parentContext} · ${childCount} gyermek)`,
+      busTooltip: `Gyűjtősín a gyermekek összekapcsolásához (${parentContext} · ${childCount} gyermek)`,
+    });
+  }
+
   const width = Math.max(960, maxRight + shiftX + CANVAS_PADDING);
-  const height = Math.max(600, (maxGen + 1) * ROW_STEP + CANVAS_PADDING);
+  const height = Math.max(600, currentY + CANVAS_PADDING);
 
   return {
     nodes,
     nodeById,
     unions: layoutUnions,
+    buses,
     childEdges,
     width,
     height,
@@ -665,11 +975,12 @@ export interface DirectFocusSet {
   personIds: Set<string>;
   unionIds: Set<string>;
   edgeIds: Set<string>;
+  busIds: Set<string>;
 }
 
 /**
- * Kijelölt személyhez tartozó közvetlen rokoni környezet (szülők, partnerek, gyermekek)
- * és az őket összekötő vonalak összegyűjtése kiemeléshez.
+ * Kijelölt vagy rámutatott személyhez tartozó közvetlen rokoni környezet
+ * (szülők, partnerek, gyermekek) és az őket összekötő gyűjtősínek/vonalak kiemeléséhez.
  */
 export function getDirectFocusSet(
   selectedId: string | null,
@@ -682,6 +993,7 @@ export function getDirectFocusSet(
   const personIds = new Set<string>([selectedId]);
   const unionIds = new Set<string>();
   const edgeIds = new Set<string>();
+  const busIds = new Set<string>();
 
   for (const lu of layout.unions) {
     const isP1 = lu.p1.person.id === selectedId;
@@ -696,6 +1008,7 @@ export function getDirectFocusSet(
   for (const edge of layout.childEdges) {
     if (edge.childId === selectedId || edge.parentIds.includes(selectedId)) {
       edgeIds.add(edge.id);
+      busIds.add(edge.busId);
       personIds.add(edge.childId);
       for (const pid of edge.parentIds) {
         personIds.add(pid);
@@ -706,6 +1019,6 @@ export function getDirectFocusSet(
     }
   }
 
-  return { personIds, unionIds, edgeIds };
+  return { personIds, unionIds, edgeIds, busIds };
 }
 
