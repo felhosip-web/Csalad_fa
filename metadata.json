@@ -1,0 +1,6 @@
+{
+  "name": "Családfa — Hordozható Családfakészítő",
+  "description": "Linuxon és Windowson működő, hordozható .ftree (SQLite + media) csomagformátumra épülő családfa-készítő és -szerkesztő alkalmazás Python backenddel és React frontenddel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

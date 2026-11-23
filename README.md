@@ -1,11 +1,57 @@
-<div align="center">
+# Családfa — Hordozható Családfakészítő és -szerkesztő
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Linuxon és Windowson egyaránt futó, számítógéphez kevésbé értő felhasználók számára tervezett családfa-alkalmazás **Python backenddel** (SQLite + `.ftree` ZIP csomagformátum + Pillow képoptimalizálás) és **React frontenddel**.
 
-  <h1>Built with AI Studio</h2>
+## Fő jellemzők (1. fázis: Architektúra, adatszint és API-szerződés)
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+- **Egyetlen hordozható `.ftree` fájl**: szabványos ZIP archívum (`family.db` + `media/` + `meta.json`), így a teljes családfa képekkel együtt egyetlen fájlként menthető, másolható és megosztható.
+- **SQLite idegen kulcsokkal és séma-verziózással**: `PRAGMA foreign_keys = ON`, `schema_migrations` tábla, biztonságos előre irányú migrációs keretrendszer.
+- **Több házasság, válás és féltestvérek**: a `unions` és `parent_child.union_id` modell pontosan megkülönbözteti a különböző házasságokból származó gyermekeket és féltestvéreket.
+- **Részleges dátumok elfogadása**: elfogadja a csak évszámot (`1954`), év-hónapot (`1954-06`), teljes dátumot (`1954-06-15`), a magyar pontos formátumot (`1954.06.15.`), valamint a közelítő jelölést (`~1920`, `kb. 1920`).
+- **Biztonságos kép- és csomagkezelés**: Pillow-alapú portré átméretezés (`max 512×512`, EXIF forgatás korrekció, WebP/JPEG tömörítés), valamint Zip Slip és path traversal elleni védelem.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Mappastruktúra
 
-</div>
+```text
+.
+├── backend/
+│   ├── __init__.py
+│   ├── schema.sql          # SQLite táblák, megszorítások és indexek
+│   ├── models.py           # Domain adatmodellek és strukturált hibák
+│   ├── validators.py       # Részleges dátum- és bemenet-validátorok
+│   ├── db.py               # SQLite kapcsolatkezelő és migrációs motor
+│   ├── media.py            # Pillow portréoptimalizáló és médiaútvonal-védelem
+│   ├── package.py          # .ftree (ZIP) csomagoló és biztonságos kicsomagoló
+│   ├── repository.py       # Paraméterezett SQLite CRUD réteg
+│   ├── service.py          # Üzleti logika (ciklusvédelem, gyors hozzáadás, testvérszámítás)
+│   ├── server.py           # Nulla külső függőséges Python HTTP API szerver
+│   ├── fastapi_app.py      # Opcionális FastAPI + Uvicorn belépési pont
+│   ├── requirements.txt    # Python függőségek (Pillow, FastAPI, Uvicorn, pytest)
+│   └── tests/
+│       └── test_backend.py # Adatszint-, csomag- és HTTP API tesztek
+├── src/                    # React + TypeScript frontend (Vite)
+│   ├── api/client.ts       # Típusos API kliens
+│   ├── types/family.ts     # TypeScript domain típusok
+│   ├── components/         # Moduláris UI komponensek
+│   ├── App.tsx             # Adatszint- és API-műhely felület
+│   └── index.css           # Tailwind CSS v4 stílusok
+├── docs/
+│   ├── architecture.md     # Részletes architektúra és csomagformátum leírás
+│   └── api-contract.md     # REST API végpontok és JSON szerződés
+├── server.ts               # Helyi fejlesztői Express híd (Python API proxy + Vite)
+└── package.json
+```
+
+## Indítás Linuxon és Windowson
+
+### 1. Python tesztek futtatása
+```bash
+python3 -m unittest discover -s backend/tests -v
+```
+
+### 2. Teljes alkalmazás indítása (Python backend + React frontend)
+```bash
+npm install
+npm run dev
+```
+*(Opciónálisan a Python csomagok telepítése portré-átméretezéshez és FastAPI-hoz: `pip install -r backend/requirements.txt`, majd önállóan: `uvicorn backend.fastapi_app:app --port 8001` vagy `python -m backend.server --port 8001`.)*

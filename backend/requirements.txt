@@ -1,0 +1,8 @@
+# Optional production/desktop dependencies for Python backend
+# Note: backend/server.py also runs with zero external dependencies on Python 3.11+
+# Installing Pillow enables automatic EXIF orientation + WebP/JPEG portrait optimization.
+pillow>=10.4.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+pytest>=8.3.0
