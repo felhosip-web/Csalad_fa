@@ -187,6 +187,11 @@ class HTTPServerIntegrationTests(unittest.TestCase):
         self.assertEqual(snap["meta"]["person_count"], 3)
         self.assertEqual(snap["meta"]["union_count"], 1)
         self.assertEqual(snap["meta"]["relation_count"], 2)
+        self.assertTrue(snap["undo"]["can_undo"])
+
+        status, undo_res = self._req("POST", "/api/undo", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(undo_res["tree"]["meta"]["person_count"], 2)
 
 
 if __name__ == "__main__":

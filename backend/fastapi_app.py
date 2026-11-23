@@ -164,6 +164,11 @@ def seed_sample() -> dict[str, Any]:
     return service.seed_sample_family()
 
 
+@app.post("/api/undo")
+def undo_action() -> dict[str, Any]:
+    return service.undo_last_action()
+
+
 @app.get("/media/{rel_path:path}")
 def serve_media(rel_path: str) -> FileResponse:
     target = resolve_media_path(service.workspace_dir, f"media/{rel_path}")

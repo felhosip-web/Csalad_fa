@@ -57,11 +57,17 @@ export interface TreeMeta {
   relation_count: number;
 }
 
+export interface UndoState {
+  can_undo: boolean;
+  last_label: string;
+}
+
 export interface TreeSnapshot {
   meta: TreeMeta;
   persons: Person[];
   unions: UnionRecord[];
   parent_child: ParentChild[];
+  undo?: UndoState;
 }
 
 export interface PersonBundle {
@@ -89,8 +95,8 @@ export interface HealthResponse {
 }
 
 export const GENDER_LABELS: Record<Gender, string> = {
-  male: 'Férfi',
   female: 'Nő',
+  male: 'Férfi',
   other: 'Egyéb',
   unknown: 'Ismeretlen',
 };
@@ -102,6 +108,15 @@ export const UNION_STATUS_LABELS: Record<UnionStatus, string> = {
   widowed: 'Megözvegyült',
   separated: 'Különélő',
   unknown: 'Ismeretlen',
+};
+
+export const UNION_STATUS_CANVAS_LABELS: Record<UnionStatus, string> = {
+  married: 'Házasok',
+  divorced: 'Elváltak',
+  partner: 'Élettársak',
+  widowed: 'Megözvegyült',
+  separated: 'Különélnek',
+  unknown: '',
 };
 
 export const RELATION_TYPE_LABELS: Record<RelationType, string> = {

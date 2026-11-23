@@ -1,6 +1,7 @@
 import type {
   Gender,
   HealthResponse,
+  ParentChild,
   Person,
   PersonBundle,
   RelationType,
@@ -9,6 +10,7 @@ import type {
   UnionRecord,
   UnionStatus,
 } from '../types/family';
+import { translateBackendError } from '../utils/hungarian';
 
 export class ApiError extends Error {
   status: number;
@@ -22,13 +24,20 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  let res: Response;
+  try {
+    res = await fetch(path, init);
+  } catch (err) {
+    throw new ApiError(translateBackendError(err), 0, 'network_error');
+  }
+
   const contentType = res.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
-  const data = isJson ? await res.json() : null;
+  const data = isJson ? await res.json().catch(() => null) : null;
 
   if (!res.ok) {
-    const msg = data?.error?.message || `Szerverhiba (${res.status})`;
+    const rawMsg = data?.error?.message || res.statusText;
+    const msg = translateBackendError(rawMsg, res.status);
     const code = data?.error?.code || 'http_error';
     throw new ApiError(msg, res.status, code);
   }
@@ -117,8 +126,11 @@ export const familyApi = {
     childId: string,
     payload: {
       full_name: string;
+      birth_name?: string;
       gender?: Gender;
       birth_date?: string;
+      death_date?: string;
+      is_living?: boolean;
       relation_type?: RelationType;
       union_id?: string | null;
     },
@@ -137,8 +149,11 @@ export const familyApi = {
     parentId: string,
     payload: {
       full_name: string;
+      birth_name?: string;
       gender?: Gender;
       birth_date?: string;
+      death_date?: string;
+      is_living?: boolean;
       relation_type?: RelationType;
       union_id?: string | null;
       link_both_partners?: boolean;
@@ -158,8 +173,11 @@ export const familyApi = {
     personId: string,
     payload: {
       full_name: string;
+      birth_name?: string;
       gender?: Gender;
       birth_date?: string;
+      death_date?: string;
+      is_living?: boolean;
       status?: UnionStatus;
       start_date?: string;
       end_date?: string;
@@ -173,6 +191,21 @@ export const familyApi = {
         body: JSON.stringify(payload),
       },
     );
+  },
+
+  createUnion(payload: {
+    partner1_id: string;
+    partner2_id?: string | null;
+    status?: UnionStatus;
+    start_date?: string;
+    end_date?: string;
+    notes?: string;
+  }): Promise<{ union: UnionRecord }> {
+    return request<{ union: UnionRecord }>('/api/unions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
   },
 
   updateUnion(
@@ -197,11 +230,32 @@ export const familyApi = {
     });
   },
 
+  upsertRelation(payload: {
+    child_id: string;
+    parent_id: string;
+    union_id?: string | null;
+    relation_type?: RelationType;
+  }): Promise<{ relation: ParentChild }> {
+    return request<{ relation: ParentChild }>('/api/relations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
   deleteRelation(childId: string, parentId: string): Promise<void> {
     return request<void>(
       `/api/relations/${encodeURIComponent(childId)}/${encodeURIComponent(parentId)}`,
       { method: 'DELETE' },
     );
+  },
+
+  undo(): Promise<{ undone_label: string; tree: TreeSnapshot }> {
+    return request<{ undone_label: string; tree: TreeSnapshot }>('/api/undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
   },
 
   seedSample(): Promise<TreeSnapshot> {

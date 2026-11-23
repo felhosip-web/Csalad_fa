@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
+import sqlite3
+import tempfile
 from typing import Any
 
 from .db import connect_sqlite
-from .media import delete_media_file, save_portrait_image
+from .media import delete_media_file, resolve_media_path, save_portrait_image
 from .models import ConflictError, ParentChild, Person, UnionRecord, ValidationError
 from .package import (
     export_ftree_package,
@@ -29,16 +32,82 @@ from .validators import (
 )
 
 
+@dataclass
+class _UndoSnapshot:
+    label: str
+    db_bytes: bytes
+    media_backups: dict[str, bytes]
+
+
+MAX_UNDO_STEPS = 15
+
+
 class FamilyTreeService:
     """High-level genealogy operations over a portable workspace directory."""
 
     def __init__(self, workspace_dir: str | Path) -> None:
         self.workspace_dir = Path(workspace_dir)
         self.db_path = initialize_workspace(self.workspace_dir)
+        self._undo_stack: list[_UndoSnapshot] = []
 
     def _repo(self) -> tuple[Any, FamilyRepository]:
         conn = connect_sqlite(self.db_path)
         return conn, FamilyRepository(conn)
+
+    def _push_undo(self, label: str, *, media_paths: list[str] | None = None) -> None:
+        """Save a lightweight SQLite backup snapshot before a mutating operation."""
+        with tempfile.TemporaryDirectory(prefix="ftree_undo_") as tmp_dir:
+            snap_path = Path(tmp_dir) / "snap.db"
+            src_conn = connect_sqlite(self.db_path)
+            try:
+                dst_conn = sqlite3.connect(str(snap_path))
+                try:
+                    src_conn.backup(dst_conn)
+                    dst_conn.commit()
+                finally:
+                    dst_conn.close()
+            finally:
+                src_conn.close()
+            db_bytes = snap_path.read_bytes()
+
+        media_backups: dict[str, bytes] = {}
+        for rel in media_paths or []:
+            if not rel:
+                continue
+            try:
+                target = resolve_media_path(self.workspace_dir, rel)
+                if target.is_file():
+                    media_backups[rel] = target.read_bytes()
+            except ValidationError:
+                pass
+
+        self._undo_stack.append(
+            _UndoSnapshot(label=label, db_bytes=db_bytes, media_backups=media_backups)
+        )
+        if len(self._undo_stack) > MAX_UNDO_STEPS:
+            self._undo_stack.pop(0)
+
+    def undo_last_action(self) -> dict[str, Any]:
+        """Restore the workspace to the state prior to the latest mutation."""
+        if not self._undo_stack:
+            raise ValidationError("Nincs visszavonható művelet.")
+        snap = self._undo_stack.pop()
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{self.db_path}{suffix}")
+            if sidecar.is_file():
+                sidecar.unlink()
+        self.db_path.write_bytes(snap.db_bytes)
+        for rel, data in snap.media_backups.items():
+            try:
+                target = resolve_media_path(self.workspace_dir, rel)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            except ValidationError:
+                pass
+        return {
+            "undone_label": snap.label,
+            "tree": self.get_tree_snapshot(),
+        }
 
     # --- Tree & Metadata ---
     def get_tree_snapshot(self, search: str = "") -> dict[str, Any]:
@@ -57,6 +126,10 @@ class FamilyTreeService:
                 "persons": [p.to_dict() for p in persons],
                 "unions": [u.to_dict() for u in unions],
                 "parent_child": [r.to_dict() for r in relations],
+                "undo": {
+                    "can_undo": len(self._undo_stack) > 0,
+                    "last_label": self._undo_stack[-1].label if self._undo_stack else "",
+                },
             }
         finally:
             conn.close()
@@ -76,6 +149,7 @@ class FamilyTreeService:
 
     def create_new_tree(self, tree_name: str = "Új családfa") -> dict[str, Any]:
         clean_name = validate_required_name(tree_name, "Családfa neve")
+        self._undo_stack.clear()
         for fname in ("family.db", "family.db-wal", "family.db-shm", "meta.json"):
             p = self.workspace_dir / fname
             if p.is_file():
@@ -98,6 +172,7 @@ class FamilyTreeService:
 
     def create_person(self, payload: dict[str, Any]) -> dict[str, Any]:
         cleaned = self._validate_person_payload(payload, partial=False)
+        self._push_undo(f"Személy felvétele: {cleaned['full_name']}")
         conn, repo = self._repo()
         try:
             person = repo.create_person(**cleaned)
@@ -109,6 +184,8 @@ class FamilyTreeService:
         cleaned = self._validate_person_payload(payload, partial=True)
         conn, repo = self._repo()
         try:
+            existing = repo.get_person(person_id)
+            self._push_undo(f"Adatok módosítása: {existing.full_name}")
             person = repo.update_person(person_id, cleaned)
             return person.to_dict()
         finally:
@@ -117,6 +194,11 @@ class FamilyTreeService:
     def delete_person(self, person_id: str) -> dict[str, Any]:
         conn, repo = self._repo()
         try:
+            existing = repo.get_person(person_id)
+            self._push_undo(
+                f"Személy törlése: {existing.full_name}",
+                media_paths=[existing.avatar_path] if existing.avatar_path else None,
+            )
             deleted = repo.delete_person(person_id)
         finally:
             conn.close()
@@ -128,6 +210,10 @@ class FamilyTreeService:
         conn, repo = self._repo()
         try:
             existing = repo.get_person(person_id)
+            self._push_undo(
+                f"Portrékép módosítása: {existing.full_name}",
+                media_paths=[existing.avatar_path] if existing.avatar_path else None,
+            )
             media_info = save_portrait_image(self.workspace_dir, raw_bytes)
             updated = repo.update_person(
                 person_id,
@@ -145,6 +231,10 @@ class FamilyTreeService:
         conn, repo = self._repo()
         try:
             existing = repo.get_person(person_id)
+            self._push_undo(
+                f"Portrékép eltávolítása: {existing.full_name}",
+                media_paths=[existing.avatar_path] if existing.avatar_path else None,
+            )
             updated = repo.update_person(person_id, {"avatar_path": ""})
         finally:
             conn.close()
@@ -267,9 +357,10 @@ class FamilyTreeService:
 
         conn, repo = self._repo()
         try:
-            repo.get_person(partner1_id)
+            p1 = repo.get_person(partner1_id)
             if partner2_id is not None:
                 repo.get_person(partner2_id)
+            self._push_undo(f"Kapcsolat felvétele: {p1.full_name}")
             union = repo.create_union(
                 partner1_id=partner1_id,
                 partner2_id=partner2_id,
@@ -318,6 +409,7 @@ class FamilyTreeService:
             if "notes" in payload:
                 fields["notes"] = normalize_text(payload.get("notes"), max_length=2000)
 
+            self._push_undo("Párkapcsolat módosítása")
             updated = repo.update_union(union_id, fields)
             return updated.to_dict()
         finally:
@@ -326,6 +418,8 @@ class FamilyTreeService:
     def delete_union(self, union_id: str) -> dict[str, Any]:
         conn, repo = self._repo()
         try:
+            repo.get_union(union_id)
+            self._push_undo("Párkapcsolat törlése")
             deleted = repo.delete_union(union_id)
             return {"deleted": deleted.to_dict()}
         finally:
@@ -356,6 +450,7 @@ class FamilyTreeService:
                     )
 
             self._ensure_no_cycle(repo, parent_id=parent_id, child_id=child_id)
+            self._push_undo("Szülő-gyermek kapcsolat rögzítése")
             rel = repo.upsert_parent_child(
                 child_id=child_id,
                 parent_id=parent_id,
@@ -369,6 +464,8 @@ class FamilyTreeService:
     def delete_parent_child(self, child_id: str, parent_id: str) -> dict[str, Any]:
         conn, repo = self._repo()
         try:
+            repo.get_relation(child_id, parent_id)
+            self._push_undo("Szülő-gyermek kapcsolat törlése")
             repo.delete_parent_child(child_id, parent_id)
             return {"deleted": {"child_id": child_id, "parent_id": parent_id}}
         finally:
@@ -385,9 +482,8 @@ class FamilyTreeService:
         conn, repo = self._repo()
         try:
             repo.get_person(child_id)
+            self._push_undo(f"Szülő hozzáadása: {person_fields['full_name']}")
             parent = repo.create_person(**person_fields)
-            # If the child already has exactly one other parent and no union_id was passed,
-            # optionally link or keep union_id explicit.
             rel = repo.upsert_parent_child(
                 child_id=child_id,
                 parent_id=parent.id,
@@ -415,6 +511,7 @@ class FamilyTreeService:
                 if parent_id not in (union.partner1_id, union.partner2_id):
                     raise ValidationError("A kiválasztott szülő nem része ennek a kapcsolatnak.")
 
+            self._push_undo(f"Gyermek hozzáadása: {person_fields['full_name']}")
             child = repo.create_person(**person_fields)
             relations: list[dict[str, Any]] = []
             rel1 = repo.upsert_parent_child(
@@ -455,6 +552,7 @@ class FamilyTreeService:
         conn, repo = self._repo()
         try:
             repo.get_person(person_id)
+            self._push_undo(f"Partner hozzáadása: {person_fields['full_name']}")
             partner = repo.create_person(**person_fields)
             union = repo.create_union(
                 partner1_id=person_id,
@@ -473,23 +571,24 @@ class FamilyTreeService:
         return export_ftree_package(self.workspace_dir, Path(output_path))
 
     def import_package(self, archive_path: str | Path) -> dict[str, Any]:
+        self._undo_stack.clear()
         meta = import_ftree_package(Path(archive_path), self.workspace_dir)
         return {"meta": meta.to_dict(), "tree": self.get_tree_snapshot()}
 
     # --- Demo Sample Family (useful for testing multiple marriages & half-siblings) ---
     def seed_sample_family(self) -> dict[str, Any]:
         """Reset workspace with a realistic Hungarian multi-marriage sample family."""
-        self.create_new_tree("Kovács–Nagy családfa (minta)")
+        self.create_new_tree("Kovács–Nagy családfa")
         conn, repo = self._repo()
         try:
-            # Grandparents
+            # Nagyszülők
             nagyapa = repo.create_person(
                 full_name="Kovács István",
                 gender="male",
                 birth_date="1942",
                 death_date="2018-11",
                 is_living=False,
-                notes="Asztalosmester Szegeden.",
+                notes="Asztalosmester Szegeden, három unoka büszke nagyapja.",
             )
             nagyanya = repo.create_person(
                 full_name="Kovács Istvánné",
@@ -497,6 +596,7 @@ class FamilyTreeService:
                 gender="female",
                 birth_date="1945-04-12",
                 is_living=True,
+                notes="Nyugdíjas általános iskolai tanítónő.",
             )
             u_gp = repo.create_union(
                 partner1_id=nagyapa.id,
@@ -504,14 +604,16 @@ class FamilyTreeService:
                 status="widowed",
                 start_date="1966-08-20",
                 end_date="2018-11",
+                notes="Több mint 50 évig éltek boldog házasságban.",
             )
 
-            # Son with two marriages
+            # Második generáció (több házassággal)
             peter = repo.create_person(
                 full_name="Kovács Péter",
                 gender="male",
                 birth_date="1968-03-05",
                 is_living=True,
+                notes="Gépészmérnök, első és második házasságából is született gyermeke.",
             )
             repo.upsert_parent_child(child_id=peter.id, parent_id=nagyapa.id, union_id=u_gp.id)
             repo.upsert_parent_child(child_id=peter.id, parent_id=nagyanya.id, union_id=u_gp.id)
@@ -522,6 +624,7 @@ class FamilyTreeService:
                 gender="female",
                 birth_date="1970",
                 is_living=True,
+                notes="Kovács Péter első házastársa.",
             )
             u_m1 = repo.create_union(
                 partner1_id=peter.id,
@@ -535,6 +638,7 @@ class FamilyTreeService:
                 gender="female",
                 birth_date="1995-09-18",
                 is_living=True,
+                notes="Kovács Péter és Szabó Anna lánya.",
             )
             repo.upsert_parent_child(child_id=kata.id, parent_id=peter.id, union_id=u_m1.id)
             repo.upsert_parent_child(child_id=kata.id, parent_id=anna.id, union_id=u_m1.id)
@@ -545,6 +649,7 @@ class FamilyTreeService:
                 gender="female",
                 birth_date="1976-11",
                 is_living=True,
+                notes="Kovács Péter második felesége, gyógyszerész.",
             )
             u_m2 = repo.create_union(
                 partner1_id=peter.id,
@@ -557,6 +662,7 @@ class FamilyTreeService:
                 gender="male",
                 birth_date="2007-02-23",
                 is_living=True,
+                notes="Kovács Péter és Nagy Éva fia (Kata féltestvére).",
             )
             repo.upsert_parent_child(child_id=bence.id, parent_id=peter.id, union_id=u_m2.id)
             repo.upsert_parent_child(child_id=bence.id, parent_id=eva.id, union_id=u_m2.id)

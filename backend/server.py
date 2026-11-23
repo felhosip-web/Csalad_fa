@@ -274,6 +274,10 @@ class FamilyTreeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, self.service.seed_sample_family())
             return
 
+        if path == "/api/undo":
+            self._send_json(200, self.service.undo_last_action())
+            return
+
         if path == "/api/package/import":
             ctype = self.headers.get("Content-Type", "")
             body = self._read_body()
