@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, LocateFixed, Plus, Search, Undo2 } from 'lucide-react';
+import { Check, LocateFixed, Pencil, Plus, Search, Undo2 } from 'lucide-react';
 import { familyApi } from './api/client';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { FamilyTreeCanvas } from './components/FamilyTreeCanvas';
@@ -40,6 +40,7 @@ export default function App() {
   const [quickAdd, setQuickAdd] = useState<QuickAddMode | null>(null);
   const [focusTrigger, setFocusTrigger] = useState<{ personId: string; seq: number } | null>(null);
   const focusSeqRef = useRef(0);
+  const listEditorRef = useRef<HTMLElement | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -221,6 +222,7 @@ export default function App() {
           <nav className="flex items-center gap-6 text-sm font-medium">
             <button
               type="button"
+              title="Interaktív családfa-gráf megnyitása"
               onClick={() => requestSwitchTab('tree')}
               className={`whitespace-nowrap shrink-0 border-b-2 py-1 transition-colors ${
                 tab === 'tree'
@@ -232,6 +234,7 @@ export default function App() {
             </button>
             <button
               type="button"
+              title="Kereshető névsor és részletes adatlapok megnyitása"
               onClick={() => requestSwitchTab('list')}
               className={`whitespace-nowrap shrink-0 border-b-2 py-1 transition-colors ${
                 tab === 'list'
@@ -243,6 +246,7 @@ export default function App() {
             </button>
             <button
               type="button"
+              title="Családfa mentése .ftree fájlba, vagy korábbi fájl betöltése"
               onClick={() => requestSwitchTab('package')}
               className={`whitespace-nowrap shrink-0 border-b-2 py-1 transition-colors ${
                 tab === 'package'
@@ -257,6 +261,7 @@ export default function App() {
           <div className="shrink-0">
             <button
               type="button"
+              title="Új személy felvétele a családfába"
               onClick={() => setQuickAdd({ type: 'root' })}
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-800 whitespace-nowrap shrink-0"
             >
@@ -367,6 +372,7 @@ export default function App() {
                     value={search}
                     onChange={(e) => void handleSearchChange(e.target.value)}
                     placeholder="Keresés név vagy születési név alapján..."
+                    title="Szűrés név vagy születési név alapján a személyek listájában"
                     aria-label="Keresés a személyek listájában"
                     className="w-full rounded-lg border border-slate-300 py-1.5 pl-9 pr-3 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
                   />
@@ -377,11 +383,11 @@ export default function App() {
                   onClick={() => void handleUndo()}
                   title={
                     snapshot.undo?.can_undo
-                      ? `Visszavonás: ${snapshot.undo.last_label} (Ctrl+Z)`
-                      : 'Nincs visszavonható művelet'
+                      ? `Utolsó lépés visszavonása: ${snapshot.undo.last_label} (Ctrl+Z)`
+                      : 'Jelenleg nincs visszavonható lépés'
                   }
                   className="rounded-lg border border-slate-300 p-2 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                  aria-label="Utolsó művelet visszavonása"
+                  aria-label="Utolsó lépés visszavonása"
                 >
                   <Undo2 className="h-4 w-4" />
                 </button>
@@ -405,6 +411,7 @@ export default function App() {
                       >
                         <button
                           type="button"
+                          title={`${p.full_name} adatlapjának megnyitása`}
                           onClick={() => requestSelectPerson(p.id, false, false)}
                           className="flex min-w-0 flex-1 items-center gap-3 text-left"
                         >
@@ -431,18 +438,45 @@ export default function App() {
                           </div>
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => requestSelectPerson(p.id, false, true)}
-                          title="Megmutatás és középre igazítás a családfán"
-                          aria-label={`${p.full_name} megmutatása a családfán`}
-                          className="shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-700 hover:border-emerald-700 hover:text-emerald-800 whitespace-nowrap"
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            <LocateFixed className="h-3.5 w-3.5" />
-                            Fán
-                          </span>
-                        </button>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              requestSelectPerson(p.id, false, false);
+                              setTimeout(() => {
+                                listEditorRef.current?.scrollIntoView({
+                                  behavior: 'smooth',
+                                  block: 'nearest',
+                                });
+                                const nameInput = document.getElementById('ed-full-name');
+                                if (nameInput instanceof HTMLInputElement) {
+                                  nameInput.focus();
+                                }
+                              }, 60);
+                            }}
+                            title="Személy adatainak gyors szerkesztése"
+                            aria-label={`${p.full_name} adatainak szerkesztése`}
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-medium text-slate-700 hover:border-slate-300 hover:bg-slate-50 whitespace-nowrap"
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              <Pencil className="h-3 w-3" />
+                              Szerkesztés
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => requestSelectPerson(p.id, false, true)}
+                            title="Ugrás a személyhez a családfa nézetben"
+                            aria-label={`${p.full_name} megmutatása a családfán`}
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-medium text-slate-700 hover:border-emerald-700 hover:text-emerald-800 whitespace-nowrap"
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              <LocateFixed className="h-3.5 w-3.5 text-emerald-700" />
+                              Fán
+                            </span>
+                          </button>
+                        </div>
                       </li>
                     );
                   })
@@ -451,7 +485,10 @@ export default function App() {
             </aside>
 
             {/* Jobb oldali kártyaszerkesztő */}
-            <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <section
+              ref={listEditorRef}
+              className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white"
+            >
               {bundle ? (
                 <PersonEditorDrawer
                   bundle={bundle}

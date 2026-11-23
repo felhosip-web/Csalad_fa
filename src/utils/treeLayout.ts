@@ -5,8 +5,8 @@ import type {
   UnionRecord,
   UnionStatus,
 } from '../types/family';
-import { UNION_STATUS_CANVAS_LABELS } from '../types/family';
-import { extractDisplayYear } from './hungarian';
+import { UNION_STATUS_CANVAS_LABELS, UNION_STATUS_LABELS } from '../types/family';
+import { extractDisplayYear, formatHungarianDate } from './hungarian';
 
 export const CARD_WIDTH = 228;
 export const CARD_HEIGHT = 96;
@@ -31,6 +31,7 @@ export interface LayoutUnion {
   anchorX: number;
   anchorY: number;
   label: string;
+  tooltip: string;
   status: UnionStatus;
   svgPath: string;
   labelX: number;
@@ -44,6 +45,8 @@ export interface LayoutChildEdge {
   unionId: string | null;
   relationType: RelationType;
   svgPath: string;
+  arrowX: number;
+  arrowY: number;
   isBiological: boolean;
 }
 
@@ -247,6 +250,22 @@ function buildOrthogonalUnionLabel(union: UnionRecord): string {
   return statusText;
 }
 
+function buildUnionTooltip(union: UnionRecord): string {
+  const statusName = UNION_STATUS_LABELS[union.status] || 'Kapcsolat';
+  const start = formatHungarianDate(union.start_date);
+  const end = formatHungarianDate(union.end_date);
+  if (start && end) {
+    return `${statusName} (${start} – ${end})`;
+  }
+  if (start) {
+    return `${statusName} · Kezdete: ${start}`;
+  }
+  if (end) {
+    return `${statusName} · Vége: ${end}`;
+  }
+  return statusName;
+}
+
 export function computeFamilyTreeLayout(
   persons: Person[],
   unions: UnionRecord[],
@@ -431,6 +450,7 @@ export function computeFamilyTreeLayout(
         anchorX,
         anchorY,
         label: buildOrthogonalUnionLabel(u),
+        tooltip: buildUnionTooltip(u),
         status: u.status,
         svgPath: '',
         labelX: anchorX,
@@ -491,6 +511,7 @@ export function computeFamilyTreeLayout(
       anchorX,
       anchorY,
       label: buildOrthogonalUnionLabel(u),
+      tooltip: buildUnionTooltip(u),
       status: u.status,
       svgPath,
       labelX,
@@ -605,11 +626,12 @@ export function computeFamilyTreeLayout(
     for (const item of group.items) {
       const cx = item.childNode.x + CARD_WIDTH / 2;
       const cy = item.childNode.y;
-      const busY = Math.min(cy - 28 - laneDelta, Math.max(group.anchorY + 34, cy - 36));
+      const endY = cy - 6;
+      const busY = Math.min(endY - 22 - laneDelta, Math.max(group.anchorY + 28, endY - 30));
       const path =
         Math.abs(group.anchorX - cx) < 1
-          ? `M ${group.anchorX} ${group.anchorY} L ${cx} ${cy}`
-          : `M ${group.anchorX} ${group.anchorY} V ${busY} H ${cx} V ${cy}`;
+          ? `M ${group.anchorX} ${group.anchorY} L ${cx} ${endY}`
+          : `M ${group.anchorX} ${group.anchorY} V ${busY} H ${cx} V ${endY}`;
 
       childEdges.push({
         id: `${group.unionId ?? group.items[0].parentIds.join('-')}-${item.childNode.person.id}`,
@@ -618,6 +640,8 @@ export function computeFamilyTreeLayout(
         unionId: group.unionId,
         relationType: item.relationType,
         svgPath: path,
+        arrowX: cx,
+        arrowY: cy,
         isBiological: item.relationType === 'biological',
       });
     }

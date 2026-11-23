@@ -142,6 +142,18 @@ export function translateBackendError(error: unknown, fallbackStatus?: number): 
     return 'Nincs jogosultságod a művelet végrehajtásához.';
   }
 
+  if (
+    lower.includes('unsupported') ||
+    lower.includes('invalid image') ||
+    lower.includes('invalid file')
+  ) {
+    return 'A kiválasztott fájl formátuma nem támogatott vagy sérült.';
+  }
+
+  if (lower.includes('required') || lower.includes('missing')) {
+    return 'Kérlek, töltsd ki a kötelező mezőket a folytatáshoz.';
+  }
+
   if (raw && /[áéíóöőúüű]/i.test(raw)) {
     return raw;
   }

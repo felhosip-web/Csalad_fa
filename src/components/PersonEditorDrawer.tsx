@@ -370,6 +370,7 @@ export function PersonEditorDrawer({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            title="Új vagy meglévő szülő hozzáadása ehhez a személyhez"
             onClick={() =>
               onOpenQuickAdd({
                 type: 'parent',
@@ -384,6 +385,7 @@ export function PersonEditorDrawer({
           </button>
           <button
             type="button"
+            title="Házastárs vagy élettárs hozzáadása ehhez a személyhez"
             onClick={() =>
               onOpenQuickAdd({
                 type: 'partner',
@@ -398,6 +400,7 @@ export function PersonEditorDrawer({
           </button>
           <button
             type="button"
+            title="Gyermek hozzáadása ehhez a személyhez"
             onClick={() =>
               onOpenQuickAdd({
                 type: 'child',
@@ -425,7 +428,10 @@ export function PersonEditorDrawer({
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-sm font-semibold text-slate-900">Alapadatok</h3>
               <div className="flex items-center gap-2">
-                <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                <label
+                  title="Portrékép kiválasztása és feltöltése a számítógépről"
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
                   <Upload className="h-3.5 w-3.5" />
                   {person.avatar_path ? 'Kép cseréje' : 'Kép feltöltése'}
                   <input
@@ -438,6 +444,7 @@ export function PersonEditorDrawer({
                 {person.avatar_path && (
                   <button
                     type="button"
+                    title="Feltöltött portrékép eltávolítása ennél a személynél"
                     onClick={() => setConfirmState({ kind: 'delete_avatar' })}
                     className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
                   >
@@ -455,6 +462,7 @@ export function PersonEditorDrawer({
                 id="ed-full-name"
                 type="text"
                 required
+                title="Add meg a személy jelenlegi vagy legismertebb teljes nevét"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
@@ -468,6 +476,7 @@ export function PersonEditorDrawer({
               <input
                 id="ed-birth-name"
                 type="text"
+                title="Add meg a születési vagy leánykori nevet, ha eltér a jelenlegi névtől"
                 value={birthName}
                 onChange={(e) => setBirthName(e.target.value)}
                 placeholder="Hagyd üresen, ha nem tér el"
@@ -482,6 +491,7 @@ export function PersonEditorDrawer({
                 </label>
                 <select
                   id="ed-gender"
+                  title="Válaszd ki a személy nemét a kártyaszínhez és a nyilvántartáshoz"
                   value={gender}
                   onChange={(e) => setGender(e.target.value as Gender)}
                   className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
@@ -495,7 +505,10 @@ export function PersonEditorDrawer({
               </div>
 
               <div className="flex items-end pb-2">
-                <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
+                <label
+                  title="Ha be van jelölve, a személy élőként szerepel és nem tartozik hozzá halálozási dátum"
+                  className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700"
+                >
                   <input
                     type="checkbox"
                     checked={isLiving}
@@ -521,6 +534,7 @@ export function PersonEditorDrawer({
                 <input
                   id="ed-birth-date"
                   type="text"
+                  title="Teljes vagy részleges dátum is megadható (például 1965, 1965.05 vagy kb. 1965)"
                   value={birthDate}
                   onChange={(e) => setBirthDate(e.target.value)}
                   placeholder="például: 1965. 05. 14."
@@ -535,6 +549,7 @@ export function PersonEditorDrawer({
                 <input
                   id="ed-death-date"
                   type="text"
+                  title="Halálozási dátum beírásakor a Jelenleg élő személy jelölés automatikusan kikapcsol"
                   value={deathDate}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -567,6 +582,11 @@ export function PersonEditorDrawer({
           <div className="rounded-xl border border-slate-200 bg-white">
             <button
               type="button"
+              title={
+                showAdvanced
+                  ? 'További részletek és kapcsolatok elrejtése'
+                  : 'Megjegyzések és kapcsolatok megjelenítése'
+              }
               onClick={() => setShowAdvanced((v) => !v)}
               className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold text-slate-900 hover:bg-slate-50"
             >
@@ -587,6 +607,7 @@ export function PersonEditorDrawer({
                   <textarea
                     id="ed-notes"
                     rows={3}
+                    title="Ide írhatsz emlékeket, foglalkozást, lakóhelyet vagy családi történeteket"
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     placeholder="Foglalkozás, lakhely, fontosabb életesemények..."
@@ -614,6 +635,7 @@ export function PersonEditorDrawer({
                               {u.partner ? (
                                 <button
                                   type="button"
+                                  title={`${partnerLabel} adatlapjának megnyitása`}
                                   onClick={() => requestSelectPerson(u.partner!.id)}
                                   className="text-left text-xs font-semibold text-slate-900 hover:underline"
                                 >
@@ -633,7 +655,7 @@ export function PersonEditorDrawer({
                                     partnerLabel,
                                   })
                                 }
-                                title="Kapcsolat törlése"
+                                title="Párkapcsolat törlése a fáról (a személyek megmaradnak)"
                                 aria-label="Kapcsolat törlése"
                                 className="rounded p-1 text-slate-400 hover:bg-white hover:text-red-700"
                               >
@@ -644,6 +666,7 @@ export function PersonEditorDrawer({
                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                               <select
                                 aria-label="Kapcsolat állapota"
+                                title="Kapcsolat jellege vagy jelenlegi állapota"
                                 value={u.status}
                                 onChange={(e) =>
                                   void handleUnionUpdate(u.id, {
@@ -659,7 +682,9 @@ export function PersonEditorDrawer({
                                 ))}
                               </select>
                               <input
+                                key={`${u.id}-start-${u.start_date}`}
                                 type="text"
+                                title="Házasság vagy kapcsolat kezdete (mező elhagyásakor mentődik)"
                                 defaultValue={formatHungarianDate(u.start_date)}
                                 placeholder="Kezdete (például 1993)"
                                 onBlur={(e) => {
@@ -671,7 +696,9 @@ export function PersonEditorDrawer({
                                 className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-800"
                               />
                               <input
+                                key={`${u.id}-end-${u.end_date}`}
                                 type="text"
+                                title="Kapcsolat vége, ha véget ért (mező elhagyásakor mentődik)"
                                 defaultValue={formatHungarianDate(u.end_date)}
                                 placeholder="Vége (ha véget ért)"
                                 onBlur={(e) => {
@@ -706,6 +733,7 @@ export function PersonEditorDrawer({
                         >
                           <button
                             type="button"
+                            title={`${link.person.full_name} adatlapjának megnyitása`}
                             onClick={() => requestSelectPerson(link.parent_id)}
                             className="min-w-0 flex-1 truncate text-left text-xs font-medium text-slate-900 hover:underline"
                           >
@@ -713,6 +741,7 @@ export function PersonEditorDrawer({
                           </button>
                           <select
                             aria-label="Szülői kapcsolat típusa"
+                            title="Szülői kapcsolat típusának megváltoztatása"
                             value={link.relation_type}
                             onChange={(e) =>
                               void handleRelationTypeChange(
@@ -739,7 +768,7 @@ export function PersonEditorDrawer({
                                 parentName: link.person.full_name,
                               })
                             }
-                            title="Szülői kapcsolat bontása"
+                            title="Szülő–gyermek kapcsolat bontása"
                             aria-label="Szülői kapcsolat bontása"
                             className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-700"
                           >
@@ -767,6 +796,7 @@ export function PersonEditorDrawer({
                         >
                           <button
                             type="button"
+                            title={`${link.person.full_name} adatlapjának megnyitása`}
                             onClick={() => requestSelectPerson(link.child_id)}
                             className="min-w-0 flex-1 truncate text-left text-xs font-medium text-slate-900 hover:underline"
                           >
@@ -774,6 +804,7 @@ export function PersonEditorDrawer({
                           </button>
                           <select
                             aria-label="Gyermeki kapcsolat típusa"
+                            title="Gyermeki kapcsolat típusának megváltoztatása"
                             value={link.relation_type}
                             onChange={(e) =>
                               void handleRelationTypeChange(
@@ -800,7 +831,7 @@ export function PersonEditorDrawer({
                                 childName: link.person.full_name,
                               })
                             }
-                            title="Gyermeki kapcsolat bontása"
+                            title="Szülő–gyermek kapcsolat bontása"
                             aria-label="Gyermeki kapcsolat bontása"
                             className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-700"
                           >
@@ -828,6 +859,7 @@ export function PersonEditorDrawer({
                         >
                           <button
                             type="button"
+                            title={`${sib.person.full_name} adatlapjának megnyitása`}
                             onClick={() => requestSelectPerson(sib.person.id)}
                             className="font-medium text-slate-900 hover:underline"
                           >
@@ -849,6 +881,7 @@ export function PersonEditorDrawer({
           <div className="flex items-center justify-between gap-2 pt-1">
             <button
               type="button"
+              title="Személy végleges eltávolítása a családfából (megerősítés után)"
               onClick={() => setConfirmState({ kind: 'delete_person' })}
               disabled={saving}
               className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50"
@@ -858,6 +891,7 @@ export function PersonEditorDrawer({
             </button>
             <button
               type="submit"
+              title="A módosított adatok mentése a családfába"
               disabled={saving}
               className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
             >

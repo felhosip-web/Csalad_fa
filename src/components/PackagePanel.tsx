@@ -111,6 +111,7 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
           <a
             href="/api/package/export"
             download={`${safeFilename}.ftree`}
+            title="Letölti a teljes családfát és minden portréképet egyetlen hordozható .ftree fájlban"
             className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-800"
           >
             <Download className="h-4 w-4" />
@@ -123,7 +124,10 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
           <p className="text-xs leading-relaxed text-slate-600">
             Válassz ki egy korábban elmentett <span className="font-mono">.ftree</span> fájlt a számítógépről a családfa folytatásához.
           </p>
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
+          <label
+            title="Korábban elmentett családfa csomag (.ftree) betöltése a számítógépről"
+            className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
             <Upload className="h-4 w-4" />
             Családfa megnyitása fájlból
             <input
@@ -176,6 +180,7 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
               id="tree-name-input"
               type="text"
               required
+              title="Add meg a családfa nevét (ez jelenik meg a fejlécben és a mentett fájl nevében is)"
               value={treeName}
               onChange={(e) => setTreeName(e.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
@@ -183,6 +188,7 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
           </div>
           <button
             type="submit"
+            title="A családfa új nevének elmentése"
             disabled={busy}
             className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
           >
@@ -193,6 +199,7 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4">
           <button
             type="button"
+            title="Betölti a több házasságot és féltestvéreket bemutató magyar mintacsaládfát"
             disabled={busy}
             onClick={() => {
               if (meta.person_count > 0) {
@@ -210,6 +217,7 @@ export function PackagePanel({ meta, onRefresh }: PackagePanelProps) {
           </button>
           <button
             type="button"
+            title="Létrehoz egy teljesen üres, új családfát"
             disabled={busy}
             onClick={() => {
               if (meta.person_count > 0) {

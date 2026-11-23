@@ -18,7 +18,7 @@ import {
   UserPlus,
 } from 'lucide-react';
 import type { ParentChild, Person, UndoState, UnionRecord } from '../types/family';
-import { GENDER_LABELS } from '../types/family';
+import { GENDER_LABELS, RELATION_TYPE_LABELS } from '../types/family';
 import { formatCardYears, getInitials } from '../utils/hungarian';
 import {
   CARD_HEIGHT,
@@ -62,18 +62,24 @@ function genderCardAccent(
   isDirectNeighbor: boolean,
 ): string {
   if (selected) {
-    return 'border-emerald-700 ring-2 ring-emerald-700/25 shadow-md';
+    return 'border-emerald-700 bg-white ring-2 ring-emerald-700/20 shadow-md';
   }
   if (isDirectNeighbor) {
-    return 'border-emerald-600/50 ring-1 ring-emerald-600/15 shadow-sm';
+    if (gender === 'female') {
+      return 'border-emerald-600/50 bg-rose-50/35 ring-1 ring-emerald-600/15 shadow-sm';
+    }
+    if (gender === 'male') {
+      return 'border-emerald-600/50 bg-sky-50/35 ring-1 ring-emerald-600/15 shadow-sm';
+    }
+    return 'border-emerald-600/50 bg-stone-50/50 ring-1 ring-emerald-600/15 shadow-sm';
   }
   if (gender === 'female') {
-    return 'border-rose-200/90 hover:border-rose-300 shadow-xs';
+    return 'border-rose-200/80 bg-rose-50/40 hover:border-rose-300/90 shadow-xs';
   }
   if (gender === 'male') {
-    return 'border-sky-200/90 hover:border-sky-300 shadow-xs';
+    return 'border-sky-200/80 bg-sky-50/40 hover:border-sky-300/90 shadow-xs';
   }
-  return 'border-slate-200 hover:border-slate-300 shadow-xs';
+  return 'border-slate-200/90 bg-stone-50/55 hover:border-slate-300 shadow-xs';
 }
 
 export function FamilyTreeCanvas({
@@ -287,6 +293,7 @@ export function FamilyTreeCanvas({
             <button
               type="button"
               onClick={() => void onSeedSample()}
+              title="Betölti a több házasságot és féltestvéreket bemutató magyar mintacsaládfát"
               className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
             >
               <Sparkles className="h-4 w-4" />
@@ -295,6 +302,7 @@ export function FamilyTreeCanvas({
             <button
               type="button"
               onClick={() => onOpenQuickAdd({ type: 'root' })}
+              title="Első családtag felvétele egy új családfához"
               className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-800"
             >
               <UserPlus className="h-4 w-4" />
@@ -343,6 +351,7 @@ export function FamilyTreeCanvas({
                 setSearchOpen(true);
               }}
               placeholder="Keresés név alapján a fán..."
+              title="Írd be egy családtag nevét vagy születési nevét, majd kattints a találatra"
               aria-label="Keresés név alapján a családfán"
               className="w-56 rounded-lg bg-transparent py-2 pl-2.5 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none sm:w-64"
             />
@@ -394,9 +403,10 @@ export function FamilyTreeCanvas({
           onClick={() => void onUndo()}
           title={
             undoState?.can_undo && undoState.last_label
-              ? `Visszavonás: ${undoState.last_label} (Ctrl+Z)`
-              : 'Nincs visszavonható művelet'
+              ? `Utolsó lépés visszavonása: ${undoState.last_label} (Ctrl+Z)`
+              : 'Jelenleg nincs visszavonható lépés'
           }
+          aria-label="Utolsó lépés visszavonása"
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap shrink-0"
         >
           <Undo2 className="h-3.5 w-3.5" />
@@ -407,19 +417,22 @@ export function FamilyTreeCanvas({
           <button
             type="button"
             onClick={() => zoomAtCenter(0.85)}
-            title="Kicsinyítés"
+            title="Kicsinyítés (vagy görgess lefelé az egérrel)"
             aria-label="Kicsinyítés"
             className="px-2.5 py-2 text-slate-700 hover:bg-slate-50"
           >
             <Minus className="h-3.5 w-3.5" />
           </button>
-          <span className="border-x border-slate-200 px-2.5 py-2 font-mono text-xs text-slate-600 tabular-nums">
+          <span
+            title="Aktuális nagyítás mértéke"
+            className="border-x border-slate-200 px-2.5 py-2 font-mono text-xs text-slate-600 tabular-nums"
+          >
             {Math.round(transform.scale * 100)}%
           </span>
           <button
             type="button"
             onClick={() => zoomAtCenter(1.18)}
-            title="Nagyítás"
+            title="Nagyítás (vagy görgess felfelé az egérrel)"
             aria-label="Nagyítás"
             className="px-2.5 py-2 text-slate-700 hover:bg-slate-50"
           >
@@ -430,7 +443,8 @@ export function FamilyTreeCanvas({
         <button
           type="button"
           onClick={fitToView}
-          title="Teljes családfa megjelenítése középen"
+          title="Teljes családfa középre igazítása és áttekintése"
+          aria-label="Teljes fa nézet"
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 whitespace-nowrap shrink-0"
         >
           <Maximize2 className="h-3.5 w-3.5" />
@@ -453,28 +467,50 @@ export function FamilyTreeCanvas({
           height={layout.height}
           className="pointer-events-none absolute inset-0 overflow-visible"
         >
-          {/* Szülő-gyermek ágak */}
+          {/* Szülő-gyermek ágak és származtatási nyilak */}
           {layout.childEdges.map((edge) => {
             const isHighlighted = !focusSet || focusSet.edgeIds.has(edge.id);
+            const strokeColor =
+              focusSet && isHighlighted
+                ? '#0f766e'
+                : edge.isBiological
+                  ? '#64748b'
+                  : '#94a3b8';
+            const edgeOpacity = isHighlighted ? 1 : 0.22;
+            const relLabel = RELATION_TYPE_LABELS[edge.relationType];
+            const edgeTitle = edge.isBiological
+              ? `${relLabel} leszármazási ág (a nyíl a gyermek felé mutat)`
+              : `${relLabel} kapcsolat (nem vérszerinti, szaggatott ág, a nyíl a gyermek felé mutat)`;
+
             return (
-              <path
-                key={edge.id}
-                d={edge.svgPath}
-                fill="none"
-                stroke={
-                  focusSet && isHighlighted
-                    ? '#047857'
-                    : edge.isBiological
-                      ? '#64748b'
-                      : '#94a3b8'
-                }
-                strokeWidth={focusSet && isHighlighted ? 2.4 : 1.75}
-                strokeOpacity={isHighlighted ? 1 : 0.22}
-                strokeDasharray={edge.isBiological ? undefined : '6 4'}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="transition-opacity duration-150"
-              />
+              <g key={edge.id} className="transition-opacity duration-150">
+                <path
+                  d={edge.svgPath}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={focusSet && isHighlighted ? 2.2 : 1.75}
+                  strokeOpacity={edgeOpacity}
+                  strokeDasharray={edge.isBiological ? undefined : '6 4'}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                {/* Lefelé, a gyermek kártyája felé mutató iránymutató nyílhegy */}
+                <path
+                  d={`M ${edge.arrowX - 4.5} ${edge.arrowY - 8} L ${edge.arrowX} ${edge.arrowY - 1} L ${edge.arrowX + 4.5} ${edge.arrowY - 8} Z`}
+                  fill={strokeColor}
+                  fillOpacity={edgeOpacity}
+                />
+                {/* Kényelmesebb egérrel való rámutatási felület a magyar súgóhoz */}
+                <path
+                  d={edge.svgPath}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={14}
+                  style={{ pointerEvents: 'stroke' }}
+                >
+                  <title>{edgeTitle}</title>
+                </path>
+              </g>
             );
           })}
 
@@ -494,17 +530,23 @@ export function FamilyTreeCanvas({
                   d={lu.svgPath}
                   fill="none"
                   stroke={isBroken ? '#b45309' : '#0f766e'}
-                  strokeWidth={focusSet && isHighlighted ? 2.5 : 2}
+                  strokeWidth={focusSet && isHighlighted ? 2.4 : 2}
                   strokeDasharray={isBroken ? '5 4' : isPartner ? '2 4' : undefined}
-                />
+                  style={{ pointerEvents: 'stroke' }}
+                >
+                  <title>{lu.tooltip}</title>
+                </path>
                 <circle
                   cx={lu.anchorX}
                   cy={lu.anchorY}
-                  r={4}
+                  r={4.2}
                   fill={isBroken ? '#fffbeb' : '#0f766e'}
                   stroke={isBroken ? '#b45309' : '#ffffff'}
                   strokeWidth={1.5}
-                />
+                  style={{ pointerEvents: 'all' }}
+                >
+                  <title>{lu.tooltip}</title>
+                </circle>
               </g>
             );
           })}
@@ -518,17 +560,18 @@ export function FamilyTreeCanvas({
           return (
             <div
               key={`lbl-${lu.union.id}`}
+              title={lu.tooltip}
               style={{
                 left: lu.labelX,
                 top: lu.labelY - 22,
                 transform: 'translateX(-50%)',
               }}
-              className={`pointer-events-none absolute whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium transition-opacity duration-150 ${
+              className={`pointer-events-auto cursor-help absolute whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium transition-opacity duration-150 ${
                 isHighlighted ? 'opacity-100' : 'opacity-25'
               } ${
                 isBroken
                   ? 'border border-amber-200/80 bg-amber-50/95 text-amber-800'
-                  : 'bg-white/90 text-slate-600'
+                  : 'border border-slate-200/70 bg-white/95 text-slate-600'
               }`}
             >
               {lu.label}
@@ -571,6 +614,7 @@ export function FamilyTreeCanvas({
               <div
                 role="button"
                 tabIndex={0}
+                title="Kattints a kijelöléshez és a gyorsgombokhoz, vagy kattints duplán az adatlap megnyitásához"
                 onClick={(e) => {
                   e.stopPropagation();
                   onSelectPerson(person.id);
@@ -586,7 +630,7 @@ export function FamilyTreeCanvas({
                     onSelectPerson(person.id);
                   }
                 }}
-                className={`group flex h-[96px] w-full cursor-pointer items-center gap-3 rounded-xl border bg-white px-3.5 py-2.5 text-left transition-all ${genderCardAccent(
+                className={`group flex h-[96px] w-full cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-all ${genderCardAccent(
                   person.gender,
                   isSelected,
                   isDirectNeighbor,
@@ -640,7 +684,7 @@ export function FamilyTreeCanvas({
                 >
                   <button
                     type="button"
-                    title="Szülő hozzáadása ehhez a személyhez"
+                    title="Új vagy meglévő szülő hozzáadása ehhez a személyhez"
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenQuickAdd({
@@ -656,7 +700,7 @@ export function FamilyTreeCanvas({
                   </button>
                   <button
                     type="button"
-                    title="Gyermek hozzáadása ehhez a személyhez"
+                    title="Gyermek hozzáadása ehhez a személyhez (választható párkapcsolathoz is)"
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenQuickAdd({
@@ -673,7 +717,7 @@ export function FamilyTreeCanvas({
                   </button>
                   <button
                     type="button"
-                    title="Házastárs vagy élettárs hozzáadása"
+                    title="Házastárs vagy élettárs hozzáadása ehhez a személyhez"
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenQuickAdd({
@@ -689,7 +733,7 @@ export function FamilyTreeCanvas({
                   </button>
                   <button
                     type="button"
-                    title="Személy adatainak és kapcsolatainak szerkesztése"
+                    title="Személy adatainak, portréképének és kapcsolatainak szerkesztése"
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenEditor(person.id);
@@ -720,13 +764,22 @@ export function FamilyTreeCanvas({
       ) : (
         <div
           data-canvas-ui="true"
-          className="pointer-events-none absolute bottom-3 left-4 z-10 hidden flex-wrap items-center gap-4 rounded-lg border border-slate-200/80 bg-white/90 px-3 py-1.5 text-[11px] text-slate-600 sm:flex"
+          className="pointer-events-none absolute bottom-3 left-4 z-10 hidden flex-wrap items-center gap-3 rounded-lg border border-slate-200/80 bg-white/95 px-3 py-1.5 text-[11px] text-slate-600 shadow-xs sm:flex"
         >
-          <span>Húzd a hátteret a mozgatáshoz</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-0.5 w-4 bg-slate-500" aria-hidden="true" />
+            <span>Nyíl: szülőtől a gyermek felé (vér szerinti)</span>
+          </span>
           <span aria-hidden="true">·</span>
-          <span>Görgess a nagyításhoz</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-block w-4 border-t-2 border-dashed border-slate-400"
+              aria-hidden="true"
+            />
+            <span>Szaggatott ág: nem vérszerinti</span>
+          </span>
           <span aria-hidden="true">·</span>
-          <span>Kattints egy kártyára a közvetlen kapcsolatok kiemeléséhez</span>
+          <span>Húzd a hátteret a mozgatáshoz, görgess a nagyításhoz</span>
         </div>
       )}
     </div>

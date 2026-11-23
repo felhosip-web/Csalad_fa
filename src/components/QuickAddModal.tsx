@@ -254,6 +254,7 @@ export function QuickAddModal({
           <div className="mt-4 flex rounded-lg bg-slate-100 p-1 text-xs font-medium">
             <button
               type="button"
+              title="Új személy létrehozása és összekapcsolása"
               onClick={() => setSourceTab('new')}
               className={`flex-1 rounded-md py-1.5 transition-colors ${
                 sourceTab === 'new'
@@ -265,6 +266,7 @@ export function QuickAddModal({
             </button>
             <button
               type="button"
+              title="Már meglévő családtag kiválasztása és összekötése"
               onClick={() => setSourceTab('existing')}
               className={`flex-1 rounded-md py-1.5 transition-colors ${
                 sourceTab === 'existing'
@@ -332,6 +334,7 @@ export function QuickAddModal({
                   type="text"
                   required
                   autoFocus
+                  title="Add meg az új családtag teljes nevét"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   placeholder="például: Kovács Eszter"
@@ -346,6 +349,7 @@ export function QuickAddModal({
                 <input
                   id="qa-birthname"
                   type="text"
+                  title="Add meg a születési vagy leánykori nevet, ha eltér a jelenlegi névtől"
                   value={birthName}
                   onChange={(e) => setBirthName(e.target.value)}
                   placeholder="Hagyd üresen, ha megegyezik"
@@ -360,6 +364,7 @@ export function QuickAddModal({
                   </label>
                   <select
                     id="qa-gender"
+                    title="Válaszd ki a személy nemét"
                     value={gender}
                     onChange={(e) => setGender(e.target.value as Gender)}
                     className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
@@ -379,6 +384,7 @@ export function QuickAddModal({
                   <input
                     id="qa-birth"
                     type="text"
+                    title="Részleges vagy teljes dátum is megadható (például 1965 vagy kb. 1965)"
                     value={birthDate}
                     onChange={(e) => setBirthDate(e.target.value)}
                     placeholder="például: 1965. 05. 14."
@@ -396,6 +402,7 @@ export function QuickAddModal({
               <div className="rounded-lg border border-slate-200 bg-slate-50/50">
                 <button
                   type="button"
+                  title="Elhalálozási adatok és portrékép megnyitása vagy elrejtése"
                   onClick={() => setShowMore((v) => !v)}
                   className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-slate-700 hover:text-slate-900"
                 >
@@ -419,6 +426,7 @@ export function QuickAddModal({
                         <input
                           id="qa-death"
                           type="text"
+                          title="Dátum beírásakor a Jelenleg élő személy jelölés automatikusan kikapcsol"
                           value={deathDate}
                           onChange={(e) => {
                             const val = e.target.value;
@@ -432,7 +440,10 @@ export function QuickAddModal({
                         />
                       </div>
                       <div className="flex items-end pb-2">
-                        <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-slate-700">
+                        <label
+                          title="Ha be van jelölve, a személy élőként kerül a családfába"
+                          className="inline-flex cursor-pointer items-center gap-2 text-xs text-slate-700"
+                        >
                           <input
                             type="checkbox"
                             checked={isLiving}
@@ -455,7 +466,10 @@ export function QuickAddModal({
                         : 'Elhunytként jelölve. Ha mégis él, pipáld vissza a „Jelenleg élő személy” mezőt.'}
                     </p>
                     <div className="flex items-center justify-between pt-1">
-                      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                      <label
+                        title="Portrékép kiválasztása a számítógépről"
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
                         <Upload className="h-3.5 w-3.5" />
                         {avatarFile ? avatarFile.name : 'Portrékép kiválasztása'}
                         <input
@@ -468,6 +482,7 @@ export function QuickAddModal({
                       {avatarFile && (
                         <button
                           type="button"
+                          title="Kiválasztott kép törlése"
                           onClick={() => setAvatarFile(null)}
                           className="text-xs text-red-700 hover:underline"
                         >
@@ -488,6 +503,7 @@ export function QuickAddModal({
               </label>
               <select
                 id="qa-rel-type"
+                title="A szülő és gyermek közötti rokonság típusa (a nem vérszerinti ágak szaggatott vonallal jelennek meg)"
                 value={relationType}
                 onChange={(e) => setRelationType(e.target.value as RelationType)}
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
@@ -508,6 +524,7 @@ export function QuickAddModal({
               </label>
               <select
                 id="qa-union"
+                title="Válaszd ki, hogy melyik párkapcsolatból származik a gyermek"
                 value={unionId}
                 onChange={(e) => setUnionId(e.target.value)}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
@@ -522,7 +539,10 @@ export function QuickAddModal({
                 ))}
               </select>
               {unionId && (
-                <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-700">
+                <label
+                  title="Ha be van jelölve, a gyermek automatikusan a kiválasztott társ gyermeke is lesz"
+                  className="flex cursor-pointer items-center gap-2 text-xs text-slate-700"
+                >
                   <input
                     type="checkbox"
                     checked={linkBoth}
@@ -543,6 +563,7 @@ export function QuickAddModal({
                 </label>
                 <select
                   id="qa-status"
+                  title="Válaszd ki a párkapcsolat jellegét"
                   value={unionStatus}
                   onChange={(e) => setUnionStatus(e.target.value as UnionStatus)}
                   className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-700 focus:outline-none"
@@ -561,6 +582,7 @@ export function QuickAddModal({
                 <input
                   id="qa-start"
                   type="text"
+                  title="Add meg a házasság vagy kapcsolat kezdetének évét vagy dátumát"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
                   placeholder="például: 2005"
@@ -579,6 +601,7 @@ export function QuickAddModal({
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
               type="button"
+              title="Bezárás mentés nélkül (Esc)"
               onClick={onClose}
               disabled={submitting}
               className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0"
@@ -587,6 +610,7 @@ export function QuickAddModal({
             </button>
             <button
               type="submit"
+              title="Adatok mentése és felvétel a családfába"
               disabled={submitting}
               className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50 whitespace-nowrap shrink-0"
             >
