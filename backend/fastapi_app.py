@@ -1,7 +1,7 @@
 """Optional FastAPI entrypoint sharing the exact same FamilyTreeService & contract.
 
 Run with:
-    uvicorn backend.fastapi_app:app --reload --port 8001
+    uvicorn backend.fastapi_app:app --reload --host 127.0.0.1 --port 8001
 """
 
 from __future__ import annotations

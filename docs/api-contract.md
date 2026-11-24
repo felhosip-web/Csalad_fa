@@ -1,6 +1,6 @@
 # REST API Szerződés
 
-Alapértelmezett helyi cím: `http://127.0.0.1:8001` (vagy a Vite/Express proxy-n keresztül `/api/*`).
+Alapértelmezett helyi cím: `http://127.0.0.1:8001` (vagy a Vite/Express proxy-n keresztül `/api/*`). A fejlesztői proxy és a desktop indító alapértelmezetten kizárólag `127.0.0.1` címen figyel; távoli interfész csak a Python/desktop indító explicit `--host` argumentumával kérhető.
 
 ## Rendszer és Csomagkezelés
 
