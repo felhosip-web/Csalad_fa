@@ -18,6 +18,7 @@ from backend.db import CURRENT_SCHEMA_VERSION, connect_sqlite, ensure_schema, ge
 from backend.media import MAX_UPLOAD_BYTES
 from backend.models import ConflictError, NotFoundError, PackageError, ValidationError
 from backend.package import export_ftree_package, import_ftree_package
+from backend.repository import FamilyRepository
 from backend.server import FamilyTreeHTTPServer
 from backend.service import MAX_UNDO_STEPS, FamilyTreeService
 from backend.validators import normalize_partial_date, validate_date_order
@@ -74,6 +75,17 @@ class SchemaAndServiceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def _parent_child_pairs(
+        self, service: FamilyTreeService | None = None
+    ) -> set[tuple[str, str]]:
+        db_service = service or self.service
+        conn = connect_sqlite(db_service.db_path)
+        try:
+            rows = conn.execute("SELECT child_id, parent_id FROM parent_child;").fetchall()
+            return {(str(row["child_id"]), str(row["parent_id"])) for row in rows}
+        finally:
+            conn.close()
 
     def test_foreign_keys_and_schema_version(self) -> None:
         conn = connect_sqlite(self.workspace / "family.db")
@@ -148,14 +160,158 @@ class SchemaAndServiceTests(unittest.TestCase):
         statuses = {u["status"] for u in peter_bundle["unions"]}
         self.assertEqual(statuses, {"divorced", "married"})
 
-    def test_cycle_prevention(self) -> None:
-        a = self.service.create_person({"full_name": "Nagyapa"})
-        b = self.service.quick_add_child(a["id"], {"full_name": "Apa"})["person"]
-        c = self.service.quick_add_child(b["id"], {"full_name": "Gyermek"})["person"]
+    def test_parent_child_cycles_and_multiple_parents(self) -> None:
+        parent = self.service.create_person({"full_name": "Első szülő"})
+        child = self.service.create_person({"full_name": "Gyermek"})
+        grandchild = self.service.create_person({"full_name": "Unoka"})
+        second_parent = self.service.create_person({"full_name": "Második szülő"})
 
-        with self.assertRaises(ConflictError) as ctx:
-            self.service.add_parent_child({"parent_id": c["id"], "child_id": a["id"]})
-        self.assertIn("Körkörös kapcsolat", ctx.exception.message)
+        self.service.add_parent_child({"parent_id": parent["id"], "child_id": child["id"]})
+        expected = {(child["id"], parent["id"])}
+        self.assertEqual(self._parent_child_pairs(), expected)
+
+        with self.assertRaises(ValidationError):
+            self.service.add_parent_child({"parent_id": child["id"], "child_id": child["id"]})
+        self.assertEqual(self._parent_child_pairs(), expected)
+
+        with self.assertRaises(ConflictError):
+            self.service.add_parent_child({"parent_id": child["id"], "child_id": parent["id"]})
+        self.assertEqual(self._parent_child_pairs(), expected)
+
+        self.service.add_parent_child(
+            {"parent_id": child["id"], "child_id": grandchild["id"]}
+        )
+        expected.add((grandchild["id"], child["id"]))
+        with self.assertRaises(ConflictError):
+            self.service.add_parent_child(
+                {"parent_id": grandchild["id"], "child_id": parent["id"]}
+            )
+        self.assertEqual(self._parent_child_pairs(), expected)
+
+        self.service.add_parent_child(
+            {"parent_id": second_parent["id"], "child_id": grandchild["id"]}
+        )
+        expected.add((grandchild["id"], second_parent["id"]))
+        self.assertEqual(self._parent_child_pairs(), expected)
+
+    def test_quick_add_and_union_relations_keep_distinct_semantics(self) -> None:
+        first_parent = self.service.create_person({"full_name": "Union első"})
+        second_parent = self.service.create_person({"full_name": "Union második"})
+        union = self.service.create_union(
+            {"partner1_id": first_parent["id"], "partner2_id": second_parent["id"]}
+        )
+        self.assertEqual(self._parent_child_pairs(), set())
+
+        child_result = self.service.quick_add_child(
+            first_parent["id"],
+            {"full_name": "Közös gyermek", "union_id": union["id"]},
+        )
+        child_id = child_result["person"]["id"]
+        expected = {
+            (child_id, first_parent["id"]),
+            (child_id, second_parent["id"]),
+        }
+        self.assertEqual(self._parent_child_pairs(), expected)
+
+        parent_result = self.service.quick_add_parent(
+            child_id, {"full_name": "Gyorsan hozzáadott szülő"}
+        )
+        expected.add((child_id, parent_result["person"]["id"]))
+        self.assertEqual(self._parent_child_pairs(), expected)
+
+        partner_result = self.service.quick_add_partner(
+            first_parent["id"],
+            {"full_name": "Új partner", "status": "partner"},
+        )
+        self.assertEqual(self._parent_child_pairs(), expected)
+        self.assertEqual(
+            {item["id"] for item in self.service.get_tree_snapshot()["unions"]},
+            {union["id"], partner_result["union"]["id"]},
+        )
+
+    def test_concurrent_parent_child_additions_cannot_create_cycle(self) -> None:
+        first = self.service.create_person({"full_name": "Versenyző első"})
+        second = self.service.create_person({"full_name": "Versenyző második"})
+        other_service = FamilyTreeService(self.workspace)
+
+        first_checked = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        second_checked = threading.Event()
+        outcomes: dict[str, Exception | None] = {}
+        first_guard_calls = 0
+        original_guard = FamilyRepository.ensure_parent_child_cycle_free
+
+        def gated_guard(
+            repo: FamilyRepository, *, parent_id: str, child_id: str
+        ) -> None:
+            nonlocal first_guard_calls
+            current_thread = threading.current_thread().name
+            if current_thread == "cycle-first" and first_guard_calls == 0:
+                first_guard_calls += 1
+                original_guard(repo, parent_id=parent_id, child_id=child_id)
+                first_checked.set()
+                if not release_first.wait(timeout=5):
+                    raise TimeoutError("Timed out waiting to release the first relation.")
+                return
+            if current_thread == "cycle-second":
+                second_checked.set()
+            original_guard(repo, parent_id=parent_id, child_id=child_id)
+
+        def add_relation(
+            label: str,
+            service: FamilyTreeService,
+            parent_id: str,
+            child_id: str,
+            started: threading.Event | None = None,
+        ) -> None:
+            if started is not None:
+                started.set()
+            try:
+                service.add_parent_child(
+                    {"parent_id": parent_id, "child_id": child_id}
+                )
+            except Exception as exc:
+                outcomes[label] = exc
+            else:
+                outcomes[label] = None
+
+        first_thread = threading.Thread(
+            target=add_relation,
+            args=("first", self.service, first["id"], second["id"]),
+            name="cycle-first",
+        )
+        second_thread = threading.Thread(
+            target=add_relation,
+            args=("second", other_service, second["id"], first["id"], second_started),
+            name="cycle-second",
+        )
+        with mock.patch.object(
+            FamilyRepository, "ensure_parent_child_cycle_free", gated_guard
+        ):
+            first_thread.start()
+            try:
+                self.assertTrue(first_checked.wait(timeout=5))
+                second_thread.start()
+                self.assertTrue(second_started.wait(timeout=5))
+                self.assertFalse(
+                    second_checked.wait(timeout=0.25),
+                    "The second request reached cycle validation while the first held the write lock.",
+                )
+            finally:
+                release_first.set()
+                first_thread.join(timeout=10)
+                if second_thread.ident is not None:
+                    second_thread.join(timeout=10)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertIsNone(outcomes["first"])
+        self.assertIsInstance(outcomes["second"], ConflictError)
+        self.assertEqual(
+            self._parent_child_pairs(),
+            {(second["id"], first["id"])},
+        )
 
     def test_media_validation_replacement_and_undo_cleanup(self) -> None:
         p = self.service.create_person({"full_name": "Kép Teszt", "birth_date": "1985"})
@@ -275,6 +431,40 @@ class SchemaAndServiceTests(unittest.TestCase):
             path.name for path in archive_path.parent.iterdir() if path.name.startswith(".tmp_export_")
         ]
         self.assertEqual(leftovers, [])
+
+    def test_ftree_import_rejects_parent_child_cycles_without_changing_workspace(self) -> None:
+        source = FamilyTreeService(Path(self.tmp.name) / "cyclic_source")
+        parent = source.create_person({"full_name": "Csomag szülő"})
+        child = source.create_person({"full_name": "Csomag gyermek"})
+        source_conn = connect_sqlite(source.db_path)
+        try:
+            source_conn.executemany(
+                """
+                INSERT INTO parent_child (child_id, parent_id, relation_type, created_at)
+                VALUES (?, ?, ?, ?);
+                """,
+                [
+                    (child["id"], parent["id"], "biological", "2026-01-01T00:00:00Z"),
+                    (parent["id"], child["id"], "adoptive", "2026-01-01T00:00:00Z"),
+                ],
+            )
+            source_conn.commit()
+        finally:
+            source_conn.close()
+
+        archive_path = Path(self.tmp.name) / "cyclic.ftree"
+        export_ftree_package(source.workspace_dir, archive_path)
+        existing = self.service.create_person({"full_name": "Meglévő célfa"})
+
+        with self.assertRaises(PackageError) as ctx:
+            self.service.import_package(archive_path)
+
+        self.assertEqual(ctx.exception.code, "INVALID_PARENT_CHILD_CYCLE")
+        self.assertEqual(self._parent_child_pairs(), set())
+        self.assertEqual(
+            [person["id"] for person in self.service.get_tree_snapshot()["persons"]],
+            [existing["id"]],
+        )
 
     def test_checksum_mismatch_detection_and_legacy_fallback(self) -> None:
         p = self.service.create_person({"full_name": "Ellenőrző Béla", "birth_date": "1975"})
@@ -564,6 +754,7 @@ class SchemaAndServiceTests(unittest.TestCase):
 
         # Existing workspace remained untouched across all failures
         self.assertEqual(other_svc.get_tree_snapshot()["persons"][0]["full_name"], "Meglévő Tag")
+        self.assertEqual(self._parent_child_pairs(other_svc), set())
 
         # Valid GEDCOM import succeeds and supports undo back to previous tree
         imp_res = other_svc.import_gedcom(ged_text.encode("utf-8"))

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections import deque
 import sqlite3
 import uuid
 from typing import Any
 
 from .models import (
+    ConflictError,
     NotFoundError,
     ParentChild,
     Person,
@@ -145,6 +147,7 @@ class FamilyRepository:
     ) -> Person:
         pid = person_id or uuid.uuid4().hex
         now = utc_now_iso()
+        transaction_was_active = self.conn.in_transaction
         self.conn.execute(
             """
             INSERT INTO persons (
@@ -166,7 +169,8 @@ class FamilyRepository:
                 now,
             ),
         )
-        self.conn.commit()
+        if not transaction_was_active:
+            self.conn.commit()
         return self.get_person(pid)
 
     def update_person(self, person_id: str, fields: dict[str, Any]) -> Person:
@@ -344,6 +348,57 @@ class FamilyRepository:
             raise NotFoundError("A szülő–gyermek kapcsolat nem található.")
         return _row_to_parent_child(row)
 
+    def ensure_parent_child_cycle_free(self, *, parent_id: str, child_id: str) -> None:
+        """Reject a proposed parent-to-child edge that closes a directed cycle."""
+        visited: set[str] = set()
+        queue: deque[str] = deque([parent_id])
+        while queue:
+            current = queue.popleft()
+            if current == child_id:
+                raise ConflictError(
+                    "Körkörös kapcsolat nem hozható létre (a gyermek nem lehet saját szülőjének őse)."
+                )
+            if current in visited:
+                continue
+            visited.add(current)
+            for link in self.get_parents_of(current):
+                queue.append(link.parent_id)
+
+    def ensure_parent_child_graph_acyclic(self) -> None:
+        """Reject an imported parent-child graph containing any directed cycle."""
+        children_by_parent: dict[str, list[str]] = {}
+        rows = self.conn.execute("SELECT parent_id, child_id FROM parent_child;").fetchall()
+        for row in rows:
+            children_by_parent.setdefault(str(row["parent_id"]), []).append(str(row["child_id"]))
+
+        states: dict[str, int] = {}
+        for root in children_by_parent:
+            if states.get(root, 0) != 0:
+                continue
+            stack: list[tuple[str, bool]] = [(root, False)]
+            while stack:
+                person_id, exiting = stack.pop()
+                if exiting:
+                    states[person_id] = 2
+                    continue
+                state = states.get(person_id, 0)
+                if state == 1:
+                    raise ConflictError(
+                        "Körkörös kapcsolat nem hozható létre (a gyermek nem lehet saját szülőjének őse)."
+                    )
+                if state == 2:
+                    continue
+                states[person_id] = 1
+                stack.append((person_id, True))
+                for child_id in children_by_parent.get(person_id, []):
+                    child_state = states.get(child_id, 0)
+                    if child_state == 1:
+                        raise ConflictError(
+                            "Körkörös kapcsolat nem hozható létre (a gyermek nem lehet saját szülőjének őse)."
+                        )
+                    if child_state == 0:
+                        stack.append((child_id, False))
+
     def upsert_parent_child(
         self,
         *,
@@ -353,17 +408,27 @@ class FamilyRepository:
         relation_type: str = "biological",
     ) -> ParentChild:
         now = utc_now_iso()
-        self.conn.execute(
-            """
-            INSERT INTO parent_child (child_id, parent_id, union_id, relation_type, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(child_id, parent_id) DO UPDATE SET
-                union_id = excluded.union_id,
-                relation_type = excluded.relation_type;
-            """,
-            (child_id, parent_id, union_id, relation_type, now),
-        )
-        self.conn.commit()
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            self.ensure_parent_child_cycle_free(parent_id=parent_id, child_id=child_id)
+            self.conn.execute(
+                """
+                INSERT INTO parent_child (child_id, parent_id, union_id, relation_type, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(child_id, parent_id) DO UPDATE SET
+                    union_id = excluded.union_id,
+                    relation_type = excluded.relation_type;
+                """,
+                (child_id, parent_id, union_id, relation_type, now),
+            )
+            if owns_transaction:
+                self.conn.commit()
+        except Exception:
+            if owns_transaction:
+                self.conn.rollback()
+            raise
         return self.get_relation(child_id, parent_id)
 
     def delete_parent_child(self, child_id: str, parent_id: str) -> None:
