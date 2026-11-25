@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 import zipfile
@@ -21,15 +23,16 @@ from backend.service import MAX_UNDO_STEPS, FamilyTreeService
 from backend.validators import normalize_partial_date, validate_date_order
 from backend.version import BACKEND_VERSION
 
-# Minimal valid 1x1 PNG binary
-TINY_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\x0bIDATx\x9cc``\x00\x00\x00\x02"
-    b"\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
+# Minimal valid 1x1 RGBA PNG binaries with distinct pixel colors
+TINY_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000d4944415478da63f8cfc0f01f00050001ff56c72f0d0000000049454e44ae426082"
 )
 
-# Alternate valid 1x1 PNG binary (slightly different payload bytes for distinct file checks)
-TINY_PNG_ALT = TINY_PNG + b"\x00"
+TINY_PNG_ALT = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000d4944415478da6360f8cff01f00040101ffaeb555f50000000049454e44ae426082"
+)
 
 
 class PartialDateTests(unittest.TestCase):
@@ -164,7 +167,11 @@ class SchemaAndServiceTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError) as bad_img:
             self.service.upload_person_avatar(p["id"], b"not-a-valid-image-payload")
-        self.assertIn("nem érvényes", bad_img.exception.message)
+        self.assertEqual(bad_img.exception.code, "INVALID_IMAGE")
+        self.assertEqual(
+            bad_img.exception.message,
+            "A feltöltött képfájl sérült, hibás vagy nem támogatott formátumú.",
+        )
 
         with self.assertRaises(ValidationError) as big_img:
             self.service.upload_person_avatar(p["id"], b"x" * (MAX_UPLOAD_BYTES + 1))
@@ -241,6 +248,33 @@ class SchemaAndServiceTests(unittest.TestCase):
             zf.writestr("../../evil.txt", "pwned")
         with self.assertRaises(PackageError):
             import_ftree_package(bad_zip, ws2)
+
+    def test_package_export_failure_preserves_existing_file_and_cleans_temp(self) -> None:
+        self.service.create_person({"full_name": "Sikertelen Mentés", "birth_date": "1980"})
+        archive_path = Path(self.tmp.name) / "existing.ftree"
+        existing_content = b"existing archive"
+        archive_path.write_bytes(existing_content)
+
+        fsync_calls = 0
+        real_fsync = os.fsync
+
+        def fail_archive_fsync(file_descriptor: int) -> None:
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == 2:
+                raise OSError("simulated archive fsync failure")
+            real_fsync(file_descriptor)
+
+        with mock.patch("backend.package.os.fsync", side_effect=fail_archive_fsync):
+            with self.assertRaises(PackageError) as ctx:
+                export_ftree_package(self.workspace, archive_path)
+
+        self.assertEqual(ctx.exception.code, "PACKAGE_EXPORT_ERROR")
+        self.assertEqual(archive_path.read_bytes(), existing_content)
+        leftovers = [
+            path.name for path in archive_path.parent.iterdir() if path.name.startswith(".tmp_export_")
+        ]
+        self.assertEqual(leftovers, [])
 
     def test_checksum_mismatch_detection_and_legacy_fallback(self) -> None:
         p = self.service.create_person({"full_name": "Ellenőrző Béla", "birth_date": "1975"})

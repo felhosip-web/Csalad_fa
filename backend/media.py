@@ -146,7 +146,7 @@ def save_portrait_image(workspace_dir: Path, raw_bytes: bytes) -> dict[str, obje
     ext = detect_image_extension(raw_bytes)
     if ext is None:
         raise ValidationError(
-            "A feltöltött fájl nem érvényes vagy támogatott kép.",
+            "A feltöltött képfájl sérült, hibás vagy nem támogatott formátumú.",
             code="INVALID_IMAGE",
             hint="Csak érvényes PNG, JPG vagy WEBP képfájl tölthető fel.",
         )
