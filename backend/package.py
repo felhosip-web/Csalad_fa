@@ -16,7 +16,8 @@ from pathlib import Path, PurePosixPath
 
 from . import __version__
 from .db import CURRENT_SCHEMA_VERSION, connect_sqlite, ensure_schema
-from .models import PackageError, TreeMeta
+from .models import ConflictError, PackageError, TreeMeta
+from .repository import FamilyRepository
 from .validators import utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -477,6 +478,13 @@ def import_ftree_package_checked(
                         code="CORRUPT_DATABASE",
                     )
                 schema_ver = ensure_schema(conn)
+                try:
+                    FamilyRepository(conn).ensure_parent_child_graph_acyclic()
+                except ConflictError as exc:
+                    raise PackageError(
+                        "A csomag körkörös szülő–gyermek kapcsolatokat tartalmaz.",
+                        code="INVALID_PARENT_CHILD_CYCLE",
+                    ) from exc
                 person_count = int(conn.execute("SELECT COUNT(*) FROM persons;").fetchone()[0])
                 union_count = int(conn.execute("SELECT COUNT(*) FROM unions;").fetchone()[0])
                 relation_count = int(conn.execute("SELECT COUNT(*) FROM parent_child;").fetchone()[0])

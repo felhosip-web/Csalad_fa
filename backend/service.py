@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
@@ -504,6 +503,7 @@ class FamilyTreeService:
 
         conn, repo = self._repo()
         try:
+            conn.execute("BEGIN IMMEDIATE;")
             repo.get_person(child_id)
             repo.get_person(parent_id)
             if union_id is not None:
@@ -513,7 +513,7 @@ class FamilyTreeService:
                         "A megadott szülő nem tagja a kiválasztott párkapcsolatnak."
                     )
 
-            self._ensure_no_cycle(repo, parent_id=parent_id, child_id=child_id)
+            repo.ensure_parent_child_cycle_free(parent_id=parent_id, child_id=child_id)
             self._push_undo("Szülő-gyermek kapcsolat rögzítése")
             rel = repo.upsert_parent_child(
                 child_id=child_id,
@@ -521,7 +521,11 @@ class FamilyTreeService:
                 union_id=union_id,
                 relation_type=relation_type,
             )
+            conn.commit()
             return rel.to_dict()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -545,6 +549,7 @@ class FamilyTreeService:
 
         conn, repo = self._repo()
         try:
+            conn.execute("BEGIN IMMEDIATE;")
             repo.get_person(child_id)
             if union_id is not None:
                 repo.get_union(union_id)
@@ -556,7 +561,11 @@ class FamilyTreeService:
                 union_id=union_id,
                 relation_type=relation_type,
             )
+            conn.commit()
             return {"person": parent.to_dict(), "relation": rel.to_dict()}
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -570,6 +579,7 @@ class FamilyTreeService:
 
         conn, repo = self._repo()
         try:
+            conn.execute("BEGIN IMMEDIATE;")
             repo.get_person(parent_id)
             union: UnionRecord | None = None
             if union_id is not None:
@@ -603,7 +613,11 @@ class FamilyTreeService:
                     )
                     relations.append(rel2.to_dict())
 
+            conn.commit()
             return {"person": child.to_dict(), "relations": relations}
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -842,10 +856,8 @@ class FamilyTreeService:
                     )
                 for r in parsed.relations:
                     try:
-                        self._ensure_no_cycle(
-                            tmp_repo,
-                            parent_id=r["parent_id"],
-                            child_id=r["child_id"],
+                        tmp_repo.ensure_parent_child_cycle_free(
+                            parent_id=r["parent_id"], child_id=r["child_id"]
                         )
                     except ConflictError as exc:
                         raise PackageError(
@@ -1056,21 +1068,3 @@ class FamilyTreeService:
                 cleaned["is_living"] = False
 
         return cleaned
-
-    def _ensure_no_cycle(
-        self, repo: FamilyRepository, *, parent_id: str, child_id: str
-    ) -> None:
-        """Ensure child_id is not an ancestor of parent_id (prevents cyclic family trees)."""
-        visited: set[str] = set()
-        queue: deque[str] = deque([parent_id])
-        while queue:
-            current = queue.popleft()
-            if current == child_id:
-                raise ConflictError(
-                    "Körkörös kapcsolat nem hozható létre (a gyermek nem lehet saját szülőjének őse)."
-                )
-            if current in visited:
-                continue
-            visited.add(current)
-            for link in repo.get_parents_of(current):
-                queue.append(link.parent_id)
