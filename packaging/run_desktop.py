@@ -99,7 +99,11 @@ def run_smoke_test(static_dir: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Családfa asztali indító")
-    parser.add_argument("--host", default=os.environ.get("FTREE_HOST", "127.0.0.1"))
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("FTREE_HOST", "127.0.0.1"),
+        help="Figyelő interfész (távoli eléréshez kifejezetten meg kell adni)",
+    )
     parser.add_argument("--port", type=int, default=int(os.environ.get("FTREE_PORT", "8001")))
     parser.add_argument("--data-dir", default=None, help="Egyéni adatkönyvtár útvonala")
     parser.add_argument("--no-browser", action="store_true", help="Ne nyissa meg automatikusan a böngészőt")

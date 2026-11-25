@@ -517,7 +517,11 @@ def run_server(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Családfa Python API szerver")
-    parser.add_argument("--host", default=os.environ.get("FTREE_HOST", "127.0.0.1"))
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("FTREE_HOST", "127.0.0.1"),
+        help="Figyelő interfész (távoli eléréshez kifejezetten meg kell adni)",
+    )
     parser.add_argument("--port", type=int, default=int(os.environ.get("FTREE_PORT", "8001")))
     parser.add_argument(
         "--data-dir",

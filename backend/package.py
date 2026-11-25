@@ -257,7 +257,7 @@ def export_ftree_package(workspace_dir: Path, output_path: Path) -> Path:
                     for rel, candidate in media_files:
                         zf.write(candidate, arcname=rel)
 
-                with tmp_zip.open("rb") as fh:
+                with tmp_zip.open("r+b") as fh:
                     os.fsync(fh.fileno())
                 os.replace(str(tmp_zip), str(output_path))
             except Exception:
@@ -513,11 +513,12 @@ def import_ftree_package_checked(
                         )
 
         # Prune any unreferenced media files inside staging so imported workspace stays tidy
-        staged_media_root = (staging / "media").resolve()
+        resolved_staging = staging.resolve()
+        staged_media_root = resolved_staging / "media"
         if staged_media_root.is_dir():
             for path in list(staged_media_root.rglob("*")):
                 if path.is_file():
-                    rel = path.relative_to(staging).as_posix()
+                    rel = path.relative_to(resolved_staging).as_posix()
                     if rel not in referenced_media:
                         path.unlink(missing_ok=True)
 

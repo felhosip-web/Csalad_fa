@@ -6,6 +6,7 @@ import { createServer as createViteServer } from 'vite';
 
 const PORT = Number(process.env.PORT || 3000);
 const PYTHON_PORT = Number(process.env.FTREE_PORT || 8001);
+const HOST = '127.0.0.1';
 const PYTHON_HOST = '127.0.0.1';
 const DATA_DIR = path.resolve(process.cwd(), 'data', 'workspace');
 
@@ -131,8 +132,8 @@ async function main(): Promise<void> {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Családfa web app listening on http://localhost:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`Családfa web app listening on http://${HOST}:${PORT}`);
   });
 }
 

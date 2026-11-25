@@ -65,7 +65,7 @@ python3 -m unittest discover -s backend/tests -v
 npm install
 npm run dev
 ```
-*(Opciónálisan a Python csomagok telepítése portré-átméretezéshez és FastAPI-hoz: `pip install -r backend/requirements.txt`, majd önállóan: `uvicorn backend.fastapi_app:app --port 8001` vagy `python -m backend.server --port 8001`.)*
+*(Opciónálisan a Python csomagok telepítése portré-átméretezéshez és FastAPI-hoz: `pip install -r backend/requirements.txt`, majd önállóan: `uvicorn backend.fastapi_app:app --host 127.0.0.1 --port 8001` vagy `python -m backend.server --port 8001`.)*
 
 ### 3. Önálló asztali csomag (végfelhasználóknak, Node.js nélkül)
 A GitHub Releases oldaláról letölthető Linux és Windows csomagok indításához olvasd el a részletes magyar útmutatót:
